@@ -1,0 +1,72 @@
+# mission_node: parámetros de vuelo, esquive y misión de mapeo.
+#
+# Coordenadas RELATIVAS AL PUNTO DE DESPEGUE (norte, este) en metros; alturas
+# positivas hacia arriba. Listas de números siempre con punto decimal.
+/**:
+  ros__parameters:
+    px4:
+      local_position_topic: /fmu/out/vehicle_local_position_v1   # PX4 v1.17
+      status_topic: /fmu/out/vehicle_status_v1
+
+    # --- /mission/start: waypoints (norte, este, altura) ---
+    waypoints: [15.0, 0.0, 3.0,
+                15.0, 10.0, 3.0]
+    takeoff_altitude: 3.0
+    land_at_end: true
+
+    # --- vuelo ---
+    cruise_speed: 1.5          # m/s. Para mapear, despacio: el mapa sale mejor
+    climb_speed: 1.0
+    acceptance_radius: 0.8
+    max_lead: 1.5              # m que la referencia puede adelantarse al dron
+    control_rate: 20.0
+    nav:
+      yaw_mode: travel         # travel (mirar hacia donde va: obligatorio con cámara) | goal | fixed
+      max_yaw_rate: 0.8
+      use_planner: true        # A* sobre el mapa: resuelve trampas en U y pasillos
+      replan_period: 1.0
+      path_lookahead: 2.5
+      stuck_timeout: 25.0
+      accel_ramp_sec: 1.5
+
+    plan:
+      resolution: 0.3
+      inflation_radius: 0.9    # radio del dron + margen: el camino nunca pasa más cerca
+      cost_radius: 2.0         # entre 0.9 y 2.0 m se paga extra: prefiere el centro de pasillos
+      unknown_penalty: 0.5
+
+    # --- evasión reactiva (VFH+) ---
+    avoid:
+      enabled: true
+      robot_radius: 0.45       # m, dron con hélices
+      safety_margin: 0.5
+      lookahead: 4.0
+      slow_distance: 3.5
+      stop_distance: 1.3
+      emergency_distance: 0.9
+      trigger_hold: 0.2        # s que un desvío tiene que persistir (filtra lecturas espurias)
+      blocked_timeout: 10.0
+      sensor_timeout: 1.0
+      hold_on_sensor_loss: true
+      require_sensors: true    # no despegar si no llegan /obstacles/sectors
+      on_failure: return       # return | hold | skip
+
+    # --- /mission/map: misión de mapeo ---
+    map_mission:
+      area: [-5.0, -15.0, 25.0, 15.0]   # norte_min, este_min, norte_max, este_max
+      altitude: 2.5
+      strategy: frontier       # frontier (explora lo desconocido) | lawnmower (zigzag)
+      lane_spacing: 6.0        # m entre carriles (lawnmower)
+      max_duration: 600.0      # s
+      min_frontier_length: 0.9
+      spin_at_start: true      # giro de 360° al despegar (necesario con cámara)
+      spin_at_goals: false
+      reset_map: true          # borrar el mapa al empezar
+      save_on_finish: true     # llamar a /map/save al terminar
+      return_home: true
+      goal_timeout: 60.0
+
+    scan:
+      yaw_rate: 0.6
+
+    auto_start: ''             # '' | waypoints | mapeo  (sólo para simulación)

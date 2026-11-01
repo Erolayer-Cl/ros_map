@@ -1,0 +1,25 @@
+# Caso 2: pared irregular (escombros / roca): bloques con salientes de hasta
+# 0.6 m, girados y de distinta altura. Los 5 haces fijos del repo de referencia
+# pueden "pasar entre" dos salientes; acá cuenta toda la nube.
+# El mapa tiene que dibujarla como IRREGULAR (naranja), no como plana.
+nombre: 02_pared_irregular
+descripcion: Pared de escombros de 16 m con salientes de 0.6 m, waypoint detrás.
+objetos:
+  - tipo: pared_irregular
+    nombre: escombros
+    desde: [10.0, -9.0]
+    hasta: [10.0, 6.0]
+    alto: 4.5
+    espesor: 0.5
+    rugosidad: 0.6
+    tramo: 1.0
+    semilla: 7
+mision:
+  tipo: waypoints
+  altura: 3.0
+  waypoints:
+    - [20.0, 0.0]
+  area: [-3.0, -13.0, 22.0, 11.0]
+esperado:
+  paredes_irregulares_min: 1
+  estado_final: DONE

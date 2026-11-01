@@ -1,0 +1,62 @@
+# mapper_node con Unreal + Cosys-AirSim (o con fake_px4_world, que imita lo mismo).
+#
+# El lidar se declara en settings.json (ver src/uav_sim/airsim/settings.json):
+# un "Lidar" (SensorType 6) llamado "lidar" en el vehículo "PX4". airsim_node
+# lo publica en /airsim_node/PX4/lidar/points/lidar, en el marco del sensor y
+# con ejes FLU (invierte y/z de su NED interno).
+#
+# OJO con los tipos: las listas de números van con punto decimal (0.0, no 0).
+# Si no, ROS 2 las toma como enteros y rechaza el parámetro.
+/**:
+  ros__parameters:
+    px4:
+      local_position_topic: /fmu/out/vehicle_local_position_v1   # PX4 v1.17: sufijo _v1
+      attitude_topic: /fmu/out/vehicle_attitude
+
+    cloud:
+      topics: ['/airsim_node/PX4/lidar/points/lidar']
+      axes: ['flu']
+      # Montaje del lidar respecto del centro del dron, FRD (m). Tiene que
+      # coincidir con X/Y/Z y Roll/Pitch/Yaw del sensor en settings.json.
+      mount_xyz: [0.0, 0.0, -0.15]
+      mount_rpy_deg: [0.0, 0.0, 0.0]
+      max_rate: 10.0          # Hz: nubes más seguidas que esto se descartan
+      downsample: 0.08        # m: un punto por vóxel antes de procesar
+
+    map:
+      resolution: 0.15        # m por celda del plano 2D
+      min_height: 0.3         # m sobre el despegue: lo de abajo es piso
+      max_height: 8.0         # m: lo de arriba (techo, cables) no se dibuja
+      no_hit_free_range: 6.0  # m que se dan por libres donde el lidar no choca
+      sensor_fov_deg: 360.0
+      min_range: 0.5          # m: descarta impactos contra el propio dron
+      max_range: 40.0
+      voxel_resolution: 0.2
+
+    sectors:
+      rate: 10.0              # Hz de /obstacles/sectors
+      range: 15.0
+      band_below: 0.7         # m bajo el dron que cuentan como choque
+      band_above: 0.7
+      from_map: true          # sumar lo que ya está en el mapa (memoria)
+
+    walls:
+      flat_max_rms: 0.08      # m de dispersión por cara para ser "plana"
+      flat_max_bow: 0.06      # m de flecha máxima (más = curva = irregular)
+      min_flat_length: 1.0
+      max_obstacle_extent: 3.0  # más chico que esto y no plano = obstáculo
+      merge_gap: 0.6          # huecos menores se unen; mayores (puertas) no
+
+    publish:
+      map_rate: 2.0
+      walls_period: 2.0
+      cloud_period: 2.0
+    publish_tf: true
+    output_dir: ~/ros_map_mapas
+
+    # Red de seguridad: publicar los sectores para la Collision Prevention de
+    # PX4 (sólo actúa en modo Position, cuando el piloto toma el control).
+    # Ver docs/jetson-px4-1.17.md antes de activarlo: si este nodo se cae, PX4
+    # bloquea el movimiento horizontal en Position.
+    px4_obstacle_distance:
+      enabled: false

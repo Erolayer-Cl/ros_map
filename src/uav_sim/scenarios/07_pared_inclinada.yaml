@@ -1,0 +1,29 @@
+# Caso 7: pared inclinada 20° (se "cae" hacia el dron) junto a una pared a
+# plomo. En planta las dos son rectas; el mapa 3D mide la inclinación y el
+# JSON/SVG la reportan. La huella 2D de la inclinada es más ancha porque se
+# proyecta toda la franja de alturas: el dron no se acerca a la parte de arriba.
+nombre: 07_pared_inclinada
+descripcion: Pared inclinada 20° y pared vertical, mapeo.
+objetos:
+  - tipo: pared
+    nombre: inclinada
+    desde: [10.0, -8.0]
+    hasta: [10.0, 0.0]
+    alto: 4.0
+    espesor: 0.25
+    inclinacion: 20
+  - tipo: pared
+    nombre: vertical
+    desde: [10.0, 2.0]
+    hasta: [10.0, 9.0]
+    alto: 4.0
+    espesor: 0.25
+mision:
+  tipo: mapeo
+  altura: 2.5
+  area: [-3.0, -10.0, 14.0, 11.0]
+  estrategia: frontier
+esperado:
+  paredes_planas_min: 2
+  inclinacion_max_min_deg: 12
+  estado_final: DONE

@@ -1,0 +1,28 @@
+# mapper_node con una cámara de profundidad (RealSense D435i/D455, Orbbec
+# Gemini 335/336, ZED X): alternativa barata y liviana al lidar, con menos
+# campo visual (~87° x 58°) y alcance útil de 5-6 m.
+#
+# realsense2_camera (ROS 2 wrapper 4.x) con pointcloud.enable:=true publica la
+# nube en el marco óptico (z adelante, x derecha, y abajo).
+/**:
+  ros__parameters:
+    cloud:
+      topics: ['/camera/camera/depth/color/points']
+      axes: ['optical']
+      mount_xyz: [0.12, 0.0, 0.0]     # cámara 12 cm adelante del centro
+      mount_rpy_deg: [0.0, 0.0, 0.0]
+      max_rate: 10.0
+      downsample: 0.08
+
+    map:
+      resolution: 0.1
+      sensor_fov_deg: 87.0            # FOV horizontal: los sectores fuera de esto no se tocan
+      no_hit_free_range: 0.0          # una cámara no dice "no hay nada": no suponer libre
+      min_range: 0.3
+      max_range: 6.0                  # más lejos, el error de la estéreo crece con d²
+
+    sectors:
+      range: 6.0
+      from_map: true                  # imprescindible: la cámara sólo ve adelante
+
+    output_dir: ~/ros_map_mapas

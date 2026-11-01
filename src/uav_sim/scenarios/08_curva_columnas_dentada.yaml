@@ -1,0 +1,41 @@
+# Caso 8: geometría difícil junta. Una pared curva (arco de 10 m de radio),
+# una pared dentada en zig-zag y tres columnas sueltas. Ninguna de las paredes
+# es plana: el mapa tiene que marcarlas irregulares y las columnas como
+# obstáculos aislados.
+nombre: 08_curva_columnas_dentada
+descripcion: Pared curva, pared en zig-zag y columnas; mapeo.
+objetos:
+  - tipo: pared_curva
+    centro: [0.0, 0.0]
+    radio: 13.0
+    desde_deg: -35
+    hasta_deg: 35
+    alto: 4.0
+    espesor: 0.3
+  - tipo: pared_dentada
+    desde: [-1.0, -10.0]
+    hasta: [9.0, -10.0]
+    alto: 4.0
+    amplitud: 0.6
+    periodo: 2.0
+  - tipo: cilindro
+    centro: [6.0, 4.0]
+    radio: 0.3
+    alto: 4.0
+  - tipo: cilindro
+    centro: [3.0, 7.5]
+    radio: 0.3
+    alto: 4.0
+  - tipo: cilindro
+    centro: [7.0, -5.0]
+    radio: 0.4
+    alto: 4.0
+mision:
+  tipo: mapeo
+  altura: 2.5
+  area: [-3.0, -11.5, 14.0, 10.0]
+  estrategia: frontier
+esperado:
+  paredes_irregulares_min: 2
+  obstaculos_min: 2
+  estado_final: DONE

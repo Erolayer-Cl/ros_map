@@ -1,0 +1,51 @@
+# Caso 6 (el principal de mapeo): una habitación de 20 x 14 m con una puerta,
+# una columna y una caja adentro. Se le da al dron la misión /mission/map con
+# el área de la habitación: explora por fronteras, dibuja las cuatro paredes,
+# la columna y la caja, guarda el mapa y vuelve a aterrizar.
+nombre: 06_habitacion
+descripcion: Habitación cerrada 20 x 14 m con puerta, columna y caja.
+objetos:
+  - tipo: pared            # pared sur, con puerta de 2 m entre e=-1 y e=1
+    desde: [-3.0, -7.0]
+    hasta: [-3.0, -1.0]
+    alto: 4.0
+    espesor: 0.25
+  - tipo: pared
+    desde: [-3.0, 1.0]
+    hasta: [-3.0, 7.0]
+    alto: 4.0
+    espesor: 0.25
+  - tipo: pared            # norte
+    desde: [17.0, -7.0]
+    hasta: [17.0, 7.0]
+    alto: 4.0
+    espesor: 0.25
+  - tipo: pared            # oeste
+    desde: [-3.0, -7.0]
+    hasta: [17.0, -7.0]
+    alto: 4.0
+    espesor: 0.25
+  - tipo: pared            # este
+    desde: [-3.0, 7.0]
+    hasta: [17.0, 7.0]
+    alto: 4.0
+    espesor: 0.25
+  - tipo: cilindro
+    nombre: columna
+    centro: [8.0, -3.0]
+    radio: 0.35
+    alto: 4.0
+  - tipo: caja
+    nombre: caja
+    centro: [11.0, 3.5]
+    tamano: [1.2, 1.2, 1.5]
+mision:
+  tipo: mapeo
+  altura: 2.2
+  area: [-3.5, -7.5, 17.5, 7.5]
+  estrategia: frontier
+esperado:
+  paredes_planas_min: 4
+  obstaculos_min: 1
+  cobertura_min: 0.85
+  estado_final: DONE

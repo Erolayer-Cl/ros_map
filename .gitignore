@@ -1,0 +1,17 @@
+# Artefactos de colcon
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Mapas generados
+mapas_offline/
+*_cloud.ply
+
+# Editores / Windows
+.vscode/
+*:Zone.Identifier

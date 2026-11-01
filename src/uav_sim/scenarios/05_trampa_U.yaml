@@ -1,0 +1,30 @@
+# Caso 5: trampa en U abierta hacia el dron. Un esquive puramente reactivo se
+# mete adentro y queda oscilando; el planificador A* sobre el mapa ve la U y
+# sale por un costado. Es el caso que justifica tener mapa + planificador.
+nombre: 05_trampa_U
+descripcion: U de 10 x 7 m abierta hacia el sur; el objetivo está detrás.
+objetos:
+  - tipo: pared
+    desde: [12.0, -5.0]
+    hasta: [12.0, 5.0]
+    alto: 5.0
+    espesor: 0.3
+  - tipo: pared
+    desde: [12.0, -5.0]
+    hasta: [5.0, -5.0]
+    alto: 5.0
+    espesor: 0.3
+  - tipo: pared
+    desde: [12.0, 5.0]
+    hasta: [5.0, 5.0]
+    alto: 5.0
+    espesor: 0.3
+mision:
+  tipo: waypoints
+  altura: 3.0
+  waypoints:
+    - [20.0, 0.0]
+  area: [-3.0, -10.0, 22.0, 10.0]
+esperado:
+  paredes_planas_min: 3
+  estado_final: DONE

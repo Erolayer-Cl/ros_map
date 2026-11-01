@@ -1,0 +1,23 @@
+# Caso 1: una pared plana entre el dron y el objetivo.
+# El dron despega mirando al norte, ve la pared con el lidar, la rodea por el
+# lado más corto y llega al waypoint de atrás. Al terminar, el mapa tiene que
+# mostrar UNA pared plana de ~16 m.
+nombre: 01_pared_plana
+descripcion: Pared recta de 16 m x 5 m a 10 m al norte. Waypoint del otro lado.
+objetos:
+  - tipo: pared
+    nombre: pared_frente
+    desde: [10.0, -8.0]
+    hasta: [10.0, 6.0]
+    alto: 5.0
+    espesor: 0.3
+mision:
+  tipo: waypoints
+  altura: 3.0
+  waypoints:
+    - [20.0, 0.0]
+  area: [-3.0, -12.0, 22.0, 12.0]
+esperado:
+  paredes_planas_min: 1
+  paredes_irregulares_max: 0
+  estado_final: DONE

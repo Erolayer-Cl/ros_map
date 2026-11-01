@@ -1,0 +1,47 @@
+# mapper_node en el dron real: Jetson + Livox Mid-360 (livox_ros_driver2).
+#
+# livox_ros_driver2 con xfer_format: 0 publica PointCloud2 (x, y, z, intensity,
+# tag, line, timestamp) en /livox/lidar, marco "livox_frame", ejes FLU. Los
+# campos extra se ignoran.
+/**:
+  ros__parameters:
+    px4:
+      local_position_topic: /fmu/out/vehicle_local_position_v1
+      attitude_topic: /fmu/out/vehicle_attitude
+
+    cloud:
+      topics: ['/livox/lidar']
+      axes: ['flu']
+      # Medir en el dron: offset del centro óptico del Mid-360 respecto del
+      # centro de masa (FRD, m). Ejemplo: 5 cm adelante, 12 cm arriba.
+      mount_xyz: [0.05, 0.0, -0.12]
+      # Inclinado 20° hacia abajo mejora mucho la detección de obstáculos
+      # bajos (el Mid-360 no ve por debajo de -7°). Ver docs/sensores.md.
+      mount_rpy_deg: [0.0, -20.0, 0.0]
+      max_rate: 10.0
+      downsample: 0.1         # el Mid-360 da 200k puntos/s: filtrar fuerte en la Jetson
+
+    map:
+      resolution: 0.15
+      min_height: 0.3
+      max_height: 8.0
+      no_hit_free_range: 6.0
+      sensor_fov_deg: 360.0
+      min_range: 0.4          # el Mid-360 ve hasta 0.1 m: descartar hélices/patas
+      max_range: 40.0
+
+    sectors:
+      rate: 10.0
+      range: 15.0
+      band_below: 0.7
+      band_above: 0.7
+      from_map: true
+
+    publish:
+      map_rate: 1.0
+      walls_period: 3.0
+      cloud_period: 5.0
+    output_dir: ~/ros_map_mapas
+
+    px4_obstacle_distance:
+      enabled: true           # ver docs/jetson-px4-1.17.md (CP_DIST, CP_GO_NO_DATA)

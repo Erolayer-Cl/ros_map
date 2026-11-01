@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>uav_sim</name>
+  <version>0.1.0</version>
+  <description>Casos de prueba: escenarios YAML que se crean en Unreal (Cosys-AirSim) o se simulan offline, PX4+lidar falso para probar sin GPU.</description>
+  <maintainer email="ibanezignacio2005@gmail.com">ignacio</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>px4_msgs</depend>
+  <depend>uav_wall_mapping</depend>
+  <depend>uav_mission</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

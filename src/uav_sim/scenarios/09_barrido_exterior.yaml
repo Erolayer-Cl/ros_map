@@ -1,0 +1,37 @@
+# Caso 9: exterior abierto con paredes sueltas, mapeado con barrido en zigzag
+# (lawnmower) en vez de fronteras. Sirve para comparar estrategias: el barrido
+# es predecible y repetible, la exploración por fronteras suele ser más corta.
+nombre: 09_barrido_exterior
+descripcion: Área abierta de 30 x 24 m con paredes sueltas, barrido en zigzag.
+objetos:
+  - tipo: pared
+    desde: [8.0, -10.0]
+    hasta: [8.0, -2.0]
+    alto: 3.0
+    espesor: 0.3
+  - tipo: pared
+    desde: [18.0, 0.0]
+    hasta: [24.0, 6.0]
+    alto: 3.5
+    espesor: 0.3
+  - tipo: pared_irregular
+    desde: [14.0, 8.0]
+    hasta: [14.0, 14.0]
+    alto: 3.0
+    espesor: 0.5
+    rugosidad: 0.5
+    semilla: 11
+  - tipo: caja
+    centro: [22.0, -8.0]
+    tamano: [2.0, 2.0, 2.0]
+    yaw: 30
+mision:
+  tipo: mapeo
+  altura: 2.5
+  area: [-3.0, -12.0, 27.0, 16.0]
+  estrategia: lawnmower
+  parametros:
+    map_mission.lane_spacing: 8.0
+esperado:
+  paredes_planas_min: 2
+  estado_final: DONE

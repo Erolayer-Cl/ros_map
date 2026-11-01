@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>uav_wall_mapping</name>
+  <version>0.1.0</version>
+  <description>Mapeo con lidar/cámara de profundidad: grilla 2D, vóxeles 3D, paredes planas e irregulares, sectores de obstáculos para la evasión.</description>
+  <maintainer email="ibanezignacio2005@gmail.com">ignacio</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>px4_msgs</depend>
+  <depend>uav_map_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

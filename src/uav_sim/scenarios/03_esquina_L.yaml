@@ -1,0 +1,26 @@
+# Caso 3: esquina en L (dos paredes planas a 90°). El objetivo queda detrás
+# de la esquina interior: hay que salir de la L y rodearla.
+# Misión de mapeo: el mapa tiene que mostrar dos paredes planas.
+nombre: 03_esquina_L
+descripcion: Dos paredes planas en L; mapeo del área alrededor.
+objetos:
+  - tipo: pared
+    desde: [10.0, -6.0]
+    hasta: [10.0, 6.0]
+    alto: 5.0
+    espesor: 0.3
+  - tipo: pared
+    desde: [10.0, 6.0]
+    hasta: [2.0, 6.0]
+    alto: 5.0
+    espesor: 0.3
+mision:
+  tipo: mapeo
+  altura: 2.5
+  area: [-4.0, -10.0, 16.0, 12.0]
+  estrategia: frontier
+  waypoints:
+    - [16.0, 10.0]
+esperado:
+  paredes_planas_min: 2
+  estado_final: DONE

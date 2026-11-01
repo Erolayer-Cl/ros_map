@@ -1,0 +1,28 @@
+# Caso 4: pasillo de 4 m de ancho y 20 m de largo, con una pared plana de un
+# lado y una irregular del otro. El dron tiene que cruzarlo sin tocar ninguna.
+nombre: 04_pasillo
+descripcion: Pasillo de 4 m, pared plana al oeste e irregular al este.
+objetos:
+  - tipo: pared
+    desde: [4.0, -2.2]
+    hasta: [24.0, -2.2]
+    alto: 4.0
+    espesor: 0.3
+  - tipo: pared_irregular
+    desde: [4.0, 2.4]
+    hasta: [24.0, 2.4]
+    alto: 4.0
+    espesor: 0.4
+    rugosidad: 0.5
+    tramo: 1.2
+    semilla: 3
+mision:
+  tipo: waypoints
+  altura: 2.0
+  waypoints:
+    - [28.0, 0.0]
+  area: [-2.0, -6.0, 28.0, 6.0]
+esperado:
+  paredes_planas_min: 1
+  paredes_irregulares_min: 1
+  estado_final: DONE
