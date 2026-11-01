@@ -54,3 +54,38 @@ Después de cambiar un `.msg`: `rm -rf build/uav_map_msgs install/uav_map_msgs`.
 - Debounce en todas las decisiones de evasión (lección de la referencia).
 - `cloud.mount_*` tiene que coincidir con el `settings.json` de AirSim o con el
   montaje real: un error de signo espeja el mapa.
+
+## Trabajo en curso: evasión para entornos reales
+
+Pedido: buscar código de ejemplo de evasión que se use en vuelos reales, ver
+qué consideran, y mejorar este stack con agentes asíncronos (investigación,
+creación, análisis, QA).
+
+Estado:
+- Base: commit `be2db04` en `claude/ros2-px4-wall-detection-mapping-taoqhe`.
+  El **push a GitHub falla con 403** (falta la GitHub App de Claude en
+  `Erolayer-Cl/ros_map`); arreglarlo en https://claude.ai/connect-github y
+  reintentar `git push -u origin claude/ros2-px4-wall-detection-mapping-taoqhe`.
+- Ola 1 (en curso): investigación de planificadores reales (EGO-Planner,
+  Fast-Planner/FUEL, FASTER, PX4-Avoidance, CMU, voxblox/nvblox,
+  kr_autonomous_flight, aerostack2), investigación de autopilotos (PX4 v1.17
+  CollisionPrevention, ArduPilot AC_Avoid/BendyRuler/Dijkstra/AP_Proximity) y
+  lista de problemas del entorno real, análisis de brechas de este código, y QA
+  adversarial (postes/cables finos, puerta angosta, ruido, polvo, latencia,
+  inercia, viento, obstáculo dinámico, pérdida de sensor, cámara 87°).
+- Ola 2 (pendiente): creación en una copia aislada (worktree) con las mejoras
+  priorizadas + `docs/evasion-entornos-reales.md` con los ejemplos y lo que
+  consideran; luego QA final con el arnés de la ola 1; integrar, `TODOS=1
+  ./run_tests.sh`, commit y push.
+
+Reportes de la sesión (scratchpad, efímero: copiar lo útil a `docs/` antes de
+cerrar): `investigacion/01_codigo_planificadores.md`,
+`investigacion/02_autopiloto_y_entorno_real.md`, `analisis/03_brechas.md`,
+`qa/04_qa_inicial.md`, arnés en `qa/harness/run_all.py --repo <ruta>`.
+
+Candidatos de mejora ya identificados (confirmar con los reportes):
+distancia de frenado dependiente de la velocidad (v²/2a + v·t_latencia),
+transformar cada nube con la pose de su timestamp (buffer de poses), filtro de
+puntos espurios y de auto-impactos, olvido de obstáculos dinámicos en el mapa
+y en los sectores, banda vertical según la actitud, retroceso sólo hacia
+sectores vistos, altura mínima y geocerca.
