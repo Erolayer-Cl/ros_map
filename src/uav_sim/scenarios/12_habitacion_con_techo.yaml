@@ -1,0 +1,59 @@
+# Caso 12: la habitación del caso 6 con techo a 3.6 m. En interiores el lidar
+# ve el techo en casi todas las direcciones; si la grilla 2D proyecta todo lo
+# que está entre 0.3 y 8 m sobre el despegue (como antes), el techo tapa la
+# grilla entera, el A* no encuentra camino y la misión termina sin mapear
+# (03_brechas.md, C4: 10 392 celdas ocupadas). La franja de la grilla tiene que
+# ser relativa al dron (map.max_height_above_drone): el techo queda en el mapa
+# 3D pero no es obstáculo para volar por debajo.
+nombre: 12_habitacion_con_techo
+descripcion: Habitación 20 x 14 m con puerta, columna, caja y techo a 3.6 m.
+objetos:
+  - tipo: pared            # sur, con puerta de 2 m
+    desde: [-3.0, -7.0]
+    hasta: [-3.0, -1.0]
+    alto: 3.6
+    espesor: 0.25
+  - tipo: pared
+    desde: [-3.0, 1.0]
+    hasta: [-3.0, 7.0]
+    alto: 3.6
+    espesor: 0.25
+  - tipo: pared            # norte
+    desde: [17.0, -7.0]
+    hasta: [17.0, 7.0]
+    alto: 3.6
+    espesor: 0.25
+  - tipo: pared            # oeste
+    desde: [-3.0, -7.0]
+    hasta: [17.0, -7.0]
+    alto: 3.6
+    espesor: 0.25
+  - tipo: pared            # este
+    desde: [-3.0, 7.0]
+    hasta: [17.0, 7.0]
+    alto: 3.6
+    espesor: 0.25
+  - tipo: cilindro
+    nombre: columna
+    centro: [8.0, -3.0]
+    radio: 0.35
+    alto: 3.6
+  - tipo: caja
+    nombre: caja
+    centro: [11.0, 3.5]
+    tamano: [1.2, 1.2, 1.5]
+  - tipo: caja             # techo: losa de 20 cm apoyada en las paredes
+    nombre: techo
+    centro: [7.0, 0.0]
+    tamano: [20.5, 14.5, 0.2]
+    base: 3.6
+mision:
+  tipo: mapeo
+  altura: 2.0
+  area: [-3.5, -7.5, 17.5, 7.5]
+  estrategia: frontier
+esperado:
+  paredes_planas_min: 4
+  obstaculos_min: 1
+  cobertura_min: 0.85
+  estado_final: DONE

@@ -25,7 +25,10 @@ class MapperConfig:
     initial_size: float = 40.0        # m (crece sola)
     max_size: float = 400.0           # m: tope de crecimiento (RAM de la Jetson)
     min_height: float = 0.3           # m sobre el despegue: lo de abajo es piso
-    max_height: float = 8.0           # m: lo de arriba no se dibuja (techos, cables)
+    max_height: float = 8.0           # m sobre el despegue: tope absoluto de la grilla 2D
+    max_height_above_drone: float = 1.0  # m sobre el DRON: tope de la grilla 2D (techos,
+    #                                   aleros, copas: el dron pasa por debajo). <= 0: sólo
+    #                                   max_height. El mapa 3D guarda todo igual.
     no_hit_free_range: float = 6.0    # m que se dan por libres en sectores sin impacto
     free_ray_bins: int = 360          # sectores del tallado de espacio libre: NO más finos
     #                                   que la resolución horizontal del sensor
@@ -163,7 +166,16 @@ class WallMapper:
         if starved:
             self.starved_clouds += 1
 
-        in_band = (heights >= c.min_height) & (heights <= c.max_height)
+        # Franja de la grilla 2D: del piso (min_height) hasta un poco por arriba
+        # del DRON en el instante de la nube. Lo que está más arriba (el techo
+        # de una habitación, un alero) no es obstáculo para volar por debajo y
+        # sin esto tapaba toda la grilla (03_brechas.md, C4). Va igual al mapa 3D.
+        drone = np.asarray(drone_position, dtype=float).reshape(3)
+        drone_h = self.home_down - drone[2]
+        top = c.max_height
+        if c.max_height_above_drone > 0.0:
+            top = min(top, drone_h + c.max_height_above_drone)
+        in_band = (heights >= c.min_height) & (heights <= top)
         hits_ne = pts[in_band, :2]
         ends = free_ray_ends(origin[:2], hits_ne, n_bins=c.free_ray_bins,
                              no_hit_range=0.0 if starved else c.no_hit_free_range,
@@ -172,8 +184,6 @@ class WallMapper:
         self.grid.update(origin[:2], hits_ne, ends)
         self.voxels.insert(pts[heights >= c.voxel_min_height], sensor_origin=origin)
 
-        drone = np.asarray(drone_position, dtype=float).reshape(3)
-        drone_h = self.home_down - drone[2]
         keep = ((heights >= max(c.min_height, drone_h - c.sector_band_below - c.sector_store_margin))
                 & (heights <= drone_h + c.sector_band_above + c.sector_store_margin))
         rel = pts[:, :2] - drone[:2]

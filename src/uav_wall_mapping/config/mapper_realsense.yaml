@@ -16,6 +16,9 @@
 
     map:
       resolution: 0.1
+      min_height: 0.3                 # m sobre el despegue: lo de abajo es piso
+      max_height: 8.0
+      max_height_above_drone: 1.0     # techo de la grilla 2D relativo al dron
       sensor_fov_deg: 87.0            # FOV horizontal: los sectores fuera de esto no se tocan
       no_hit_free_range: 0.0          # una cámara no dice "no hay nada": no suponer libre
       min_range: 0.3

@@ -178,6 +178,35 @@ class SectorTimingTest(unittest.TestCase):
         self.assertAlmostEqual(float(info.ranges[0]), 3.0, delta=0.05)
 
 
+class HeightBandTest(unittest.TestCase):
+
+    def test_ceiling_is_not_a_2d_obstacle(self):
+        """El techo (4 m, dron a 2 m) queda en el mapa 3D pero no en la grilla 2D."""
+        mapper = WallMapper(MapperConfig(max_height_above_drone=1.0))
+        mapper.set_home(0.0)
+        n, e = np.meshgrid(np.linspace(-6, 6, 60), np.linspace(-6, 6, 60))
+        ceiling = np.column_stack((n.ravel(), e.ravel(), np.full(n.size, -4.0)))
+        e1 = np.linspace(-3, 3, 100)
+        wall = np.vstack([np.column_stack((np.full_like(e1, 5.0), e1, np.full_like(e1, -h)))
+                          for h in (1.0, 2.0, 3.0)])
+        for k in range(3):
+            mapper.integrate(np.vstack((ceiling, wall)), (0.0, 0.0, -2.0), (0.0, 0.0, -2.0),
+                             stamp=0.1 * k)
+        snap = mapper.snapshot()
+        self.assertGreaterEqual(snap.value_at(5.05, 0.0), 65)        # la pared sí
+        self.assertLess(snap.value_at(-3.0, 3.0), 65)                # el techo no
+        occupied = mapper.grid.occupied_points()
+        self.assertTrue(np.all(np.abs(occupied[:, 0] - 5.0) < 0.5))
+        self.assertGreater(len(mapper.voxels), 1000)                 # en 3D está todo
+
+    def test_relative_band_can_be_disabled(self):
+        mapper = WallMapper(MapperConfig(max_height_above_drone=0.0, max_height=8.0))
+        mapper.set_home(0.0)
+        pts = np.column_stack((np.full(40, 3.0), np.linspace(-1, 1, 40), np.full(40, -5.0)))
+        mapper.integrate(pts, (0.0, 0.0, -2.0), (0.0, 0.0, -2.0), stamp=0.0)
+        self.assertGreaterEqual(mapper.snapshot().value_at(3.05, 0.0), 50)
+
+
 class MapperExportTest(unittest.TestCase):
 
     def test_mapper_and_bundle(self):

@@ -110,6 +110,7 @@ class MapperNode(Node):
             max_size=p('map.max_size').value,
             min_height=p('map.min_height').value,
             max_height=p('map.max_height').value,
+            max_height_above_drone=p('map.max_height_above_drone').value,
             no_hit_free_range=p('map.no_hit_free_range').value,
             free_ray_bins=p('map.free_ray_bins').value,
             sensor_fov_deg=p('map.sensor_fov_deg').value,
@@ -179,8 +180,9 @@ class MapperNode(Node):
         self.create_timer(p('publish.cloud_period').value, self._publish_cloud, callback_group=heavy)
 
         self.get_logger().info(
-            f'mapper_node listo: grilla {cfg.resolution:.2f} m, franja {cfg.min_height:.1f}'
-            f'-{cfg.max_height:.1f} m, salida en {self._output_dir()}')
+            f'mapper_node listo: grilla {cfg.resolution:.2f} m, franja {cfg.min_height:.1f} m del '
+            f'piso a {cfg.max_height_above_drone:.1f} m sobre el dron (tope {cfg.max_height:.1f} m), '
+            f'salida en {self._output_dir()}')
 
     # ------------------------------------------------------------------
     def _declare(self):
@@ -214,6 +216,7 @@ class MapperNode(Node):
         d('map.max_size', 400.0)
         d('map.min_height', 0.3)
         d('map.max_height', 8.0)
+        d('map.max_height_above_drone', 1.0)   # tope de la grilla 2D relativo al dron (techos)
         d('map.no_hit_free_range', 6.0)
         d('map.free_ray_bins', 360)
         d('map.sensor_fov_deg', 360.0)
