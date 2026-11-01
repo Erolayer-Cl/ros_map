@@ -14,7 +14,13 @@ Entradas (todas opcionales; con una alcanza):
 - `range.topics`: sensor_msgs/Range (rangefinders 1D, o los Distance de AirSim
   del repo de referencia).
 - La pose sale de PX4 por uXRCE-DDS (`/fmu/out/vehicle_local_position_v1` +
-  `/fmu/out/vehicle_attitude`): no hace falta TF ni MAVROS.
+  `/fmu/out/vehicle_attitude`): no hace falta TF ni MAVROS. Se guarda un
+  historial de 2 s (`pose_buffer.py`) y cada nube se transforma con la pose
+  interpolada en su `header.stamp` (instante de captura), no con la última.
+  Para eso los tiempos de PX4 tienen que estar en la base del reloj de ROS
+  (`UXRCE_DDS_SYNCT=1`, ver docs/jetson-px4-1.17.md); si no lo están (o el
+  stamp de la nube viene de otro reloj, p. ej. un Livox sin PTP) se avisa y se
+  usa la hora de llegada.
 
 Salidas:
 - `/map` (nav_msgs/OccupancyGrid, frame `map`, ENU): el plano.
@@ -57,6 +63,7 @@ from uav_wall_mapping.export import WALL_COLORS, save_map_bundle
 from uav_wall_mapping.geometry import (SensorMount, ned_to_enu, px4_quat_to_enu_flu,
                                        yaw_from_quat)
 from uav_wall_mapping.mapper_core import MapperConfig, WallMapper
+from uav_wall_mapping.pose_buffer import PoseBuffer
 from uav_wall_mapping.sectors import to_px4_obstacle_distance
 from uav_wall_mapping.walls import FLAT, IRREGULAR, OBSTACLE
 
@@ -66,6 +73,11 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 MAP_QOS = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST, depth=1)
+# Sectores: sólo sirve el último. RELIABLE con cola encolaría datos viejos
+# detrás de una pérdida (mission_node usa el mismo perfil).
+SECTORS_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.VOLATILE,
+                         history=HistoryPolicy.KEEP_LAST, depth=1)
 
 WALL_PARAMS = {
     'spine_resolution': 0.3, 'link_distance': 0.6, 'min_cells': 5, 'rdp_tolerance': 0.3,
@@ -110,15 +122,20 @@ class MapperNode(Node):
             sector_band_above=p('sectors.band_above').value,
             sector_min_points=p('sectors.min_points').value,
             sector_timeout=p('sectors.sensor_timeout').value,
+            min_cloud_points=p('sectors.min_cloud_points').value,
             sectors_from_map=p('sectors.from_map').value,
             walls={k: p(f'walls.{k}').value for k in WALL_PARAMS},
         )
         self.mapper = WallMapper(cfg)
         self.lock = threading.Lock()
+        self.poses = PoseBuffer(horizon=p('time.pose_history').value,
+                                max_extrapolation=p('time.max_extrapolation').value)
 
         self.position = None
         self.q = None
         self.pose_stamp = 0.0
+        self._attitude_ever = False
+        self._skew_warned = set()
         self.position_valid = False
         self._last_cloud = {}
         self._sensor_ever = False
@@ -138,7 +155,8 @@ class MapperNode(Node):
         self.pub_cloud = self.create_publisher(PointCloud2, '/map/cloud', 2)
         self.pub_walls = self.create_publisher(WallArray, '/walls', MAP_QOS)
         self.pub_markers = self.create_publisher(MarkerArray, '/walls/markers', MAP_QOS)
-        self.pub_sectors = self.create_publisher(ObstacleSectors, '/obstacles/sectors', 10)
+        self.pub_sectors = self.create_publisher(ObstacleSectors, '/obstacles/sectors',
+                                                 SECTORS_QOS)
         self.pub_scan = self.create_publisher(LaserScan, '/obstacles/scan', 5)
         self.pub_px4_obstacles = None
         if p('px4_obstacle_distance.enabled').value:
@@ -170,6 +188,11 @@ class MapperNode(Node):
         d('px4.local_position_topic', '/fmu/out/vehicle_local_position_v1')
         d('px4.attitude_topic', '/fmu/out/vehicle_attitude')
         d('pose_timeout', 0.5)
+        # Tiempos: cada nube con la pose de su captura (ver pose_buffer.py).
+        d('time.use_px4_timestamps', True)   # timestamp_sample de PX4 (requiere UXRCE_DDS_SYNCT=1)
+        d('time.max_clock_skew', 1.0)        # s: un stamp más lejos que esto del reloj = otro reloj
+        d('time.pose_history', 2.0)          # s de poses guardadas
+        d('time.max_extrapolation', 0.1)     # s: nube más nueva que la última pose: se usa ésa
 
         d('cloud.topics', ['/airsim_node/PX4/lidar/points/lidar'])
         d('cloud.axes', ['flu'])
@@ -203,7 +226,8 @@ class MapperNode(Node):
         d('sectors.band_below', 0.7)
         d('sectors.band_above', 0.7)
         d('sectors.min_points', 1)
-        d('sectors.sensor_timeout', 0.6)
+        d('sectors.min_cloud_points', 20)    # menos puntos útiles = sensor ciego (no es dato fresco)
+        d('sectors.sensor_timeout', 0.4)     # s desde la captura (PX4 CP: 0.5 s)
         d('sectors.from_map', True)
 
         for name, value in WALL_PARAMS.items():
@@ -270,20 +294,49 @@ class MapperNode(Node):
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
 
+    def _stamp_or_now(self, t, what):
+        """`t` si está en la base de tiempo del reloj de ROS; si no, la hora de
+        llegada (con un aviso por fuente: es un problema de configuración)."""
+        now = self._now()
+        if t > 0.0 and abs(t - now) <= self.get_parameter('time.max_clock_skew').value:
+            return t
+        if what not in self._skew_warned:
+            self._skew_warned.add(what)
+            self.get_logger().warn(
+                f'{what}: stamp {t:.3f} s desfasado {t - now:+.3f} s del reloj del nodo; se usa '
+                'la hora de llegada (¿UXRCE_DDS_SYNCT=1? ¿PTP/use_sim_time en el sensor?). '
+                'Sin el instante de captura el mapa se corre al acelerar o girar.')
+        return now
+
+    def _px4_time(self, msg, what):
+        if not self.get_parameter('time.use_px4_timestamps').value:
+            return self._now()
+        us = int(getattr(msg, 'timestamp_sample', 0) or getattr(msg, 'timestamp', 0) or 0)
+        return self._stamp_or_now(us * 1e-6, what)
+
     def _on_position(self, msg):
         self.position_valid = bool(msg.xy_valid and msg.z_valid)
         if not self.position_valid:
             return
+        t = self._px4_time(msg, 'vehicle_local_position')
+        position = (float(msg.x), float(msg.y), float(msg.z))
+        self.poses.add_position(t, position)
+        if not self._attitude_ever:
+            # Sin actitud todavía: alcanza con el rumbo para empezar.
+            self.poses.add_attitude(t, [math.cos(msg.heading / 2), 0.0, 0.0,
+                                        math.sin(msg.heading / 2)])
         with self.lock:
-            self.position = (float(msg.x), float(msg.y), float(msg.z))
+            self.position = position
             self.pose_stamp = self._now()
             if self.q is None:
-                # Sin actitud todavía: alcanza con el rumbo para empezar.
                 self.q = [math.cos(msg.heading / 2), 0.0, 0.0, math.sin(msg.heading / 2)]
             self.mapper.update_trajectory(self.position)
 
     def _on_attitude(self, msg):
-        self.q = [float(v) for v in msg.q]
+        q = [float(v) for v in msg.q]
+        self._attitude_ever = True
+        self.poses.add_attitude(self._px4_time(msg, 'vehicle_attitude'), q)
+        self.q = q
 
     def _pose(self):
         if self.position is None or self.q is None:
@@ -292,17 +345,43 @@ class MapperNode(Node):
             return None
         return self.position, list(self.q)
 
-    def _integrate(self, source, mount, points_sensor):
+    def _pose_at(self, stamp):
+        """`(posición, q, stamp)` de la captura; si el stamp cae fuera del
+        historial, la última pose con la hora de llegada (y un aviso)."""
+        found = self.poses.lookup(stamp)
+        if found is not None:
+            return found[0], found[1], stamp
         pose = self._pose()
         if pose is None:
+            return None
+        span = self.poses.span()
+        where = (f'historial {span[0]:.3f}..{span[1]:.3f}' if span else 'historial vacío')
+        self.get_logger().warn(f'nube con stamp {stamp:.3f} fuera del historial de poses '
+                               f'({where}): se usa la última pose y la hora de llegada',
+                               throttle_duration_sec=5.0)
+        return pose[0], pose[1], self._now()
+
+    def _integrate(self, source, mount, points_sensor, stamp, min_points=None,
+                   min_cloud_points=None):
+        found = self._pose_at(stamp)
+        if found is None:
             return
-        position, q = pose
-        world, origin = mount.to_world(points_sensor, position, q)
-        heading = yaw_from_quat(q) + math.atan2(mount.rotation[1, 0], mount.rotation[0, 0])
+        position, q, stamp = found
         with self.lock:
-            self.mapper.integrate(world, origin, position, self._now(), source=source,
-                                  sensor_heading=heading)
+            before = self.mapper.starved_clouds
+            self.mapper.integrate_sensor(points_sensor, mount, position, q, stamp,
+                                         source=source, min_points=min_points,
+                                         min_cloud_points=min_cloud_points)
+            starved = self.mapper.starved_clouds > before
+        if starved:
+            self.get_logger().warn(f'{source}: nube (casi) vacía: se trata como sensor ciego '
+                                   '(no talla libre ni cuenta como dato fresco)',
+                                   throttle_duration_sec=5.0)
         self._sensor_ever = True
+
+    def _header_time(self, header, what):
+        stamp = header.stamp
+        return self._stamp_or_now(float(stamp.sec) + float(stamp.nanosec) * 1e-9, what)
 
     def _on_cloud(self, topic, mount, msg):
         now = self._now()
@@ -316,20 +395,28 @@ class MapperNode(Node):
             self.get_logger().error(f'{topic}: {exc}', throttle_duration_sec=5.0)
             return
         pts = voxel_downsample(pts, self.get_parameter('cloud.downsample').value)
-        self._integrate(topic, mount, pts)
+        self._integrate(topic, mount, pts, self._header_time(msg.header, topic))
 
     def _on_scan(self, topic, mount, msg):
         pts = laserscan_to_xyz(msg.ranges, msg.angle_min, msg.angle_increment,
                                msg.range_min, msg.range_max)
-        self._integrate(topic, mount, pts)
+        self._integrate(topic, mount, pts, self._header_time(msg.header, topic))
 
     def _on_range(self, topic, mount, msg):
         pts = range_to_xyz(float(msg.range), float(msg.min_range), float(msg.max_range))
-        self._integrate(topic, mount, pts)
+        # Un rangefinder da un solo punto: con min_points > 1 nunca contaría.
+        self._integrate(topic, mount, pts, self._header_time(msg.header, topic), min_points=1,
+                        min_cloud_points=0)
 
     # ------------------------------------------------------------------
     # Publicación
     # ------------------------------------------------------------------
+    @staticmethod
+    def _set_stamp(header, t):
+        sec = math.floor(t)
+        header.stamp.sec = int(sec)
+        header.stamp.nanosec = min(int(round((t - sec) * 1e9)), 999999999)
+
     def _publish_sectors(self):
         pose = self._pose()
         if pose is None:
@@ -337,27 +424,28 @@ class MapperNode(Node):
         position, q = pose
         now = self._now()
         with self.lock:
-            ranges = self.mapper.sectors(now, position)
-            fresh = self.mapper.has_fresh_source(now)
+            info = self.mapper.sector_info(now, position)
         cfg = self.mapper.cfg
         msg = ObstacleSectors()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        # Stamp = captura del dato en vivo más nuevo: la misión calcula la edad
+        # con esto y la suma a la latencia del frenado.
+        self._set_stamp(msg.header, info.stamp if info.fresh else now)
         msg.header.frame_id = 'ned'
         msg.angle_offset = 0.0
         msg.increment = 2.0 * math.pi / cfg.sector_bins
         msg.range_max = float(cfg.sector_range)
-        msg.ranges = [float(r) for r in ranges]
+        msg.ranges = [float(r) for r in info.ranges]
         msg.position = Point(x=position[0], y=position[1], z=position[2])
         msg.band_below = float(cfg.sector_band_below)
         msg.band_above = float(cfg.sector_band_above)
-        msg.fresh_sensor = bool(fresh)
+        msg.fresh_sensor = bool(info.fresh)
         # Sin sensor fresco no se publica: la misión tiene que enterarse de que
         # se quedó ciega (y frenar), no recibir sólo la memoria del mapa.
-        if fresh:
+        if info.fresh:
             self.pub_sectors.publish(msg)
-            self._publish_scan(ranges, position)
+            self._publish_scan(info.ranges, position)
             if self.pub_px4_obstacles is not None:
-                self._publish_px4_obstacles(ranges)
+                self._publish_px4_obstacles(info.ranges)
         if self.tf_broadcaster is not None:
             self._publish_tf(position, q)
 

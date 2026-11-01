@@ -99,7 +99,7 @@ DEFAULTS = {
     'avoid.trigger_hold': 0.2,          # s que el desvío tiene que persistir
     'avoid.emergency_hold': 0.15,
     'avoid.blocked_timeout': 10.0,      # s rodeado antes de dar el objetivo por perdido
-    'avoid.sensor_timeout': 1.0,
+    'avoid.sensor_timeout': 0.5,        # s de edad (desde la captura) para usar los sectores
     'avoid.hold_on_sensor_loss': True,
     'avoid.require_sensors': True,      # no despegar sin datos de obstáculos
     'avoid.on_failure': 'return',       # return | hold | skip

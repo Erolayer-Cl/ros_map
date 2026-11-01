@@ -125,6 +125,7 @@ class LidarModel:
     mount_frd: tuple = (0.0, 0.0, -0.15)
     mount_rpy_deg: tuple = (0.0, 0.0, 0.0)    # como Roll/Pitch/Yaw en settings.json
     noise_std: float = 0.01
+    cloud_latency: float = 0.0                # s entre la captura y la entrega de la nube
 
     def mount_rotation(self):
         roll, pitch, yaw = (math.radians(v) for v in self.mount_rpy_deg)

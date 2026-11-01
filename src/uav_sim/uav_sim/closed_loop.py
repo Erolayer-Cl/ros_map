@@ -17,6 +17,7 @@ import math
 import os
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -27,6 +28,7 @@ from uav_sim.world import LidarModel, SimVehicle, World
 from uav_wall_mapping.export import save_map_bundle
 from uav_wall_mapping.geometry import SensorMount
 from uav_wall_mapping.mapper_core import MapperConfig, WallMapper
+from uav_wall_mapping.pose_buffer import PoseBuffer
 from uav_wall_mapping.walls import FLAT, IRREGULAR, OBSTACLE
 
 END_STATES = {State.DONE, State.FAILED, State.PREEMPTED, State.ABORTED}
@@ -71,7 +73,13 @@ def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, override
     lidar = lidar or LidarModel()
     rng = np.random.default_rng(seed)
     mount = SensorMount(position_frd=lidar.mount_frd, rpy_deg=lidar.mount_rpy_deg, axes='flu')
-    mapper = WallMapper(MapperConfig())
+    mapper = WallMapper(MapperConfig(sensor_fov_deg=float(lidar.horizontal_fov_deg)))
+    # Como mapper_node: historial de poses y cada nube transformada con la pose
+    # de su captura. `cloud_latency` demora la entrega de la nube; un modelo de
+    # lidar que ya devuelve la nube demorada desde `scan()` declara ese retardo
+    # en el atributo `latency` (así lo hace el arnés de QA).
+    poses = PoseBuffer(horizon=3.0)
+    in_flight = deque()
     logs = []
 
     def log(level, msg):
@@ -99,14 +107,30 @@ def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, override
         core.update_vehicle(vehicle.position, vehicle.velocity, vehicle.yaw)
         core.update_status(vehicle.armed, vehicle.offboard)
         mapper.update_trajectory(vehicle.position)
+        poses.add_position(t, vehicle.position)
+        poses.add_attitude(t, vehicle.q)
 
         # --- sensores + mapper ---
         if t >= next_scan:
             next_scan += 0.1
             pts_sensor = lidar.scan(world, vehicle.position, vehicle.q, rng)
-            pts_world, origin = mount.to_world(pts_sensor, vehicle.position, vehicle.q)
-            mapper.integrate(pts_world, origin, vehicle.position, t)
-            core.update_sectors(mapper.sectors(t, vehicle.position), t)
+            captured = t - float(getattr(lidar, 'latency', 0.0) or 0.0)
+            in_flight.append((captured + float(getattr(lidar, 'cloud_latency', 0.0)),
+                              captured, pts_sensor))
+        delivered = False
+        while in_flight and in_flight[0][0] <= t + 1e-9:
+            _, stamp, pts_sensor = in_flight.popleft()
+            pose = poses.lookup(stamp)
+            if pose is None:
+                pose, stamp = (vehicle.position, vehicle.q), t
+            mapper.integrate_sensor(pts_sensor, mount, pose[0], pose[1], stamp)
+            delivered = True
+        if delivered:
+            # Como mapper_node: sectores contra la pose ACTUAL, con el stamp de
+            # la captura, y sólo si hay una fuente en vivo fresca.
+            info = mapper.sector_info(t, vehicle.position)
+            if info.fresh:
+                core.update_sectors(info.ranges, info.stamp, range_max=mapper.cfg.sector_range)
         if t >= next_map:
             next_map += 0.5
             core.update_map(mapper.snapshot(t))

@@ -50,6 +50,10 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 MAP_QOS = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST, depth=1)
+# Igual que el publicador de mapper_node: sólo sirve el último dato.
+SECTORS_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.VOLATILE,
+                         history=HistoryPolicy.KEEP_LAST, depth=1)
 
 assert {s.value for s in State} <= set(range(13)), 'State tiene que coincidir con MissionStatus'
 
@@ -70,6 +74,10 @@ class MissionNode(Node):
         self.declare_parameter('px4.target_system', 1)
         self.declare_parameter('auto_start', '')           # '' | 'waypoints' | 'mapeo'
         self.declare_parameter('map_frame', 'map')
+        # s: un header.stamp de /obstacles/sectors más lejos que esto del reloj
+        # del nodo viene de otro reloj; se usa la hora de llegada (con aviso).
+        self.declare_parameter('time.max_clock_skew', 1.0)
+        self._skew_warned = False
 
         self.lock = threading.RLock()
         self.core = MissionCore(param=lambda n: self.get_parameter(n).value, log=self._log)
@@ -91,8 +99,8 @@ class MissionNode(Node):
                                  self._on_position, PX4_QOS, callback_group=inputs)
         self.create_subscription(VehicleStatus, self.get_parameter('px4.status_topic').value,
                                  self._on_status, PX4_QOS, callback_group=inputs)
-        self.create_subscription(ObstacleSectors, '/obstacles/sectors', self._on_sectors, 10,
-                                 callback_group=inputs)
+        self.create_subscription(ObstacleSectors, '/obstacles/sectors', self._on_sectors,
+                                 SECTORS_QOS, callback_group=inputs)
         self.create_subscription(OccupancyGrid, '/map', self._on_map, MAP_QOS, callback_group=inputs)
         self.create_subscription(WallArray, '/walls', self._on_walls, MAP_QOS, callback_group=inputs)
 
@@ -139,12 +147,29 @@ class MissionNode(Node):
             self.core.update_status(msg.arming_state == VehicleStatus.ARMING_STATE_ARMED,
                                     msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD)
 
+    def _sectors_stamp(self, msg):
+        """Instante de captura del dato (header.stamp de mapper_node). La misión
+        usa su edad para frenar antes; si viene de otro reloj, hora de llegada."""
+        now = self._now()
+        t = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+        if abs(t - now) <= self.get_parameter('time.max_clock_skew').value:
+            return min(t, now)
+        if not self._skew_warned:
+            self._skew_warned = True
+            self.get_logger().warn(
+                f'/obstacles/sectors con stamp desfasado {t - now:+.2f} s del reloj de este nodo: '
+                'se usa la hora de llegada (la edad real del dato queda oculta)')
+        return now
+
     def _on_sectors(self, msg):
         ranges = np.asarray(msg.ranges, dtype=float)
+        shift = 0
         if abs(msg.angle_offset) > 1e-6 and len(ranges):
-            ranges = np.roll(ranges, int(round(msg.angle_offset / msg.increment)))
+            shift = int(round(msg.angle_offset / msg.increment))
+            ranges = np.roll(ranges, shift)
+        stamp = self._sectors_stamp(msg)
         with self.lock:
-            self.core.update_sectors(ranges, self._now())
+            self.core.update_sectors(ranges, stamp, range_max=float(msg.range_max))
 
     def _on_map(self, msg):
         values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)

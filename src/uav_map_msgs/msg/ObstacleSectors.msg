@@ -4,6 +4,10 @@
 # que px4_msgs/ObstacleDistance (72 sectores de 5°, centrado en el Norte) pero
 # en metros y float.
 
+# header.stamp = instante de CAPTURA del dato en vivo más nuevo que se usó (no
+# el de publicación): la misión calcula la edad con esto y la suma a la
+# latencia del frenado. Los sectores en sí están calculados contra la posición
+# del dron al publicar (`position`), a partir de puntos guardados en NED.
 std_msgs/Header header
 float32 angle_offset       # rumbo NED (rad) del CENTRO del sector 0 (0 = Norte)
 float32 increment          # ancho de cada sector (rad), positivo hacia el Este

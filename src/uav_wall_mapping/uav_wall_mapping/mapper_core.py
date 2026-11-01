@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from uav_wall_mapping.geometry import body_to_world, yaw_from_quat
 from uav_wall_mapping.occupancy import OccupancyGrid2D, VoxelMap3D
 from uav_wall_mapping.sectors import INF, compute_sectors, free_ray_ends, merge_sectors
 from uav_wall_mapping.walls import WallExtractor, WallTracker, annotate_3d
@@ -44,11 +45,24 @@ class MapperConfig:
     sector_band_below: float = 0.7    # m por debajo del dron que cuentan como choque
     sector_band_above: float = 0.7
     sector_min_points: int = 1
-    sector_timeout: float = 0.6       # s: una fuente más vieja que esto no cuenta
+    sector_timeout: float = 0.4       # s desde la CAPTURA: una fuente más vieja no cuenta
+    #                                   (PX4 Collision Prevention descarta a los 0.5 s)
+    sector_store_margin: float = 0.5  # m extra de franja que se guarda por si el dron sube/baja
+    min_cloud_points: int = 20        # una nube con menos puntos útiles es un sensor ciego:
+    #                                   no talla libre "donde no chocó" ni cuenta como dato fresco
     sectors_from_map: bool = True     # sumar lo que ya está en el mapa (memoria)
     # --- paredes ---
     walls: dict = field(default_factory=dict)   # kwargs para WallExtractor
     trajectory_step: float = 0.3      # m entre puntos guardados de la trayectoria
+
+
+@dataclass
+class SectorInfo:
+    """Lo que necesita la evasión, calculado contra la pose ACTUAL del dron."""
+    ranges: np.ndarray        # mínimo entre las fuentes en vivo y la memoria del mapa
+    live: np.ndarray          # sólo las fuentes en vivo (sin memoria)
+    stamp: float              # instante de captura del dato en vivo más nuevo (-inf: ninguno)
+    fresh: bool               # hay al menos una fuente en vivo dentro de `sector_timeout`
 
 
 class WallMapper:
@@ -69,7 +83,12 @@ class WallMapper:
         self.trajectory = []
         self.clouds_integrated = 0
         self.points_integrated = 0
-        self._sources = {}            # nombre -> (stamp, ranges)
+        # nombre -> (stamp de captura, puntos NE en el mundo, alturas, min_points).
+        # Se guardan los PUNTOS (en NED) y no las distancias relativas al dron:
+        # así los sectores se recalculan con la pose actual en cada publicación
+        # y no arrastran el corrimiento de una nube vieja.
+        self._sources = {}
+        self.starved_clouds = 0        # nubes (casi) vacías: sensor ciego
         self.last_extract_sec = 0.0
 
     # ------------------------------------------------------------------
@@ -97,14 +116,38 @@ class WallMapper:
             self.trajectory.append(p)
 
     # ------------------------------------------------------------------
+    def integrate_sensor(self, points_sensor, mount, position_ned, q, stamp, source='lidar',
+                         min_points=None, min_cloud_points=None):
+        """Camino completo desde el marco del sensor: lo usan `mapper_node` y
+        `closed_loop`, así los dos hacen exactamente lo mismo.
+
+        `position_ned` y `q` tienen que ser la pose del dron en `stamp` (el
+        instante de captura), no la última recibida: ver `pose_buffer.py`.
+        """
+        body = mount.to_body(points_sensor)
+        world = body_to_world(body, position_ned, q)
+        origin = mount.origin_world(position_ned, q)
+        heading = yaw_from_quat(q) + mount.heading_offset()
+        return self.integrate(world, origin, position_ned, stamp, source=source,
+                              sensor_heading=heading, min_points=min_points,
+                              min_cloud_points=min_cloud_points)
+
     def integrate(self, points_world, sensor_origin, drone_position, stamp,
-                  source='lidar', sensor_heading=0.0):
+                  source='lidar', sensor_heading=0.0, min_points=None, min_cloud_points=None):
         """Integra una nube ya transformada al mundo NED.
 
         `sensor_origin`: posición NED del sensor (para el tallado de espacio
-        libre). `drone_position`: NED del centro del dron (para los sectores).
-        `sensor_heading`: rumbo del eje del sensor, sólo importa si
-        `sensor_fov_deg` < 360. Devuelve cuántos puntos se usaron.
+        libre). `drone_position`: NED del centro del dron EN EL INSTANTE DE LA
+        NUBE. `stamp`: instante de captura (no de llegada). `sensor_heading`:
+        rumbo del eje del sensor, sólo importa si `sensor_fov_deg` < 360.
+        `min_points`: puntos por sector para esta fuente (1 para un
+        rangefinder, que da uno solo). `min_cloud_points`: con menos puntos
+        útiles que esto la nube se trata como de un sensor ciego (tapado,
+        saturado, cable suelto que sigue publicando nubes vacías): no se talla
+        espacio libre donde "no chocó" y la fuente no se refresca, así la
+        evasión se entera de que no tiene datos y frena (0 para un
+        rangefinder, que sin eco no devuelve nada). Devuelve cuántos puntos se
+        usaron.
         """
         c = self.cfg
         if self.home_down is None:
@@ -115,11 +158,15 @@ class WallMapper:
             rng = np.linalg.norm(pts - origin, axis=1)
             pts = pts[(rng >= c.min_range) & (rng <= c.max_range)]
         heights = self.home_down - pts[:, 2]
+        needed = c.min_cloud_points if min_cloud_points is None else int(min_cloud_points)
+        starved = pts.shape[0] < needed
+        if starved:
+            self.starved_clouds += 1
 
         in_band = (heights >= c.min_height) & (heights <= c.max_height)
         hits_ne = pts[in_band, :2]
         ends = free_ray_ends(origin[:2], hits_ne, n_bins=c.free_ray_bins,
-                             no_hit_range=c.no_hit_free_range,
+                             no_hit_range=0.0 if starved else c.no_hit_free_range,
                              fov_center=sensor_heading, fov=math.radians(c.sensor_fov_deg),
                              max_range=c.max_range, neighbor_bins=c.free_ray_neighbors)
         self.grid.update(origin[:2], hits_ne, ends)
@@ -127,12 +174,15 @@ class WallMapper:
 
         drone = np.asarray(drone_position, dtype=float).reshape(3)
         drone_h = self.home_down - drone[2]
-        near = ((heights >= drone_h - c.sector_band_below)
-                & (heights <= drone_h + c.sector_band_above)
-                & (heights >= c.min_height))
-        ranges, _ = compute_sectors(pts[near, :2] - drone[:2], n_bins=c.sector_bins,
-                                    max_range=c.sector_range, min_points=c.sector_min_points)
-        self._sources[source] = (float(stamp), ranges)
+        keep = ((heights >= max(c.min_height, drone_h - c.sector_band_below - c.sector_store_margin))
+                & (heights <= drone_h + c.sector_band_above + c.sector_store_margin))
+        rel = pts[:, :2] - drone[:2]
+        keep &= np.hypot(rel[:, 0], rel[:, 1]) <= c.sector_range + 2.0
+        previous = self._sources.get(source)
+        if not starved and (previous is None or float(stamp) >= previous[0]):
+            self._sources[source] = (float(stamp), pts[keep, :2].copy(), heights[keep].copy(),
+                                     int(min_points if min_points is not None
+                                         else c.sector_min_points))
         self.clouds_integrated += 1
         self.points_integrated += int(pts.shape[0])
         return int(pts.shape[0])
@@ -160,17 +210,42 @@ class WallMapper:
                                     n_bins=c.sector_bins, max_range=c.sector_range)
         return ranges
 
+    def live_sectors(self, now, drone_position):
+        """`(ranges, stamp_más_nuevo)` de las fuentes en vivo, relativos a la
+        posición actual del dron, con la franja de alturas actual."""
+        c = self.cfg
+        drone = np.asarray(drone_position, dtype=float).reshape(3)
+        drone_h = (self.home_down if self.home_down is not None else drone[2]) - drone[2]
+        lo = max(c.min_height, drone_h - c.sector_band_below)
+        hi = drone_h + c.sector_band_above
+        lists, newest = [], -math.inf
+        for stamp, ne, heights, min_points in self._sources.values():
+            if now - stamp > c.sector_timeout:
+                continue
+            band = (heights >= lo) & (heights <= hi)
+            ranges, _ = compute_sectors(ne[band] - drone[:2], n_bins=c.sector_bins,
+                                        max_range=c.sector_range, min_points=min_points)
+            lists.append(ranges)
+            newest = max(newest, stamp)
+        merged = merge_sectors(lists)
+        return (merged if merged is not None else np.full(c.sector_bins, INF)), newest
+
+    def sector_info(self, now, drone_position):
+        """Sectores para la evasión: en vivo, memoria del mapa y su edad."""
+        c = self.cfg
+        live, newest = self.live_sectors(now, drone_position)
+        ranges = live
+        if c.sectors_from_map:
+            ranges = np.minimum(live, self.map_sectors(drone_position))
+        return SectorInfo(ranges=ranges, live=live, stamp=newest,
+                          fresh=math.isfinite(newest))
+
     def sectors(self, now, drone_position):
         """Sectores combinados (mínimo) de las fuentes frescas + el mapa."""
-        c = self.cfg
-        fresh = [r for stamp, r in self._sources.values() if now - stamp <= c.sector_timeout]
-        if c.sectors_from_map:
-            fresh.append(self.map_sectors(drone_position))
-        merged = merge_sectors(fresh)
-        return merged if merged is not None else np.full(c.sector_bins, INF)
+        return self.sector_info(now, drone_position).ranges
 
     def has_fresh_source(self, now):
-        return any(now - stamp <= self.cfg.sector_timeout for stamp, _ in self._sources.values())
+        return any(now - stamp <= self.cfg.sector_timeout for stamp, *_ in self._sources.values())
 
     # ------------------------------------------------------------------
     def extract_walls(self):

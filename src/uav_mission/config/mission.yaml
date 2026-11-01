@@ -51,7 +51,7 @@
       emergency_distance: 0.9
       trigger_hold: 0.2        # s que un desvío tiene que persistir (filtra lecturas espurias)
       blocked_timeout: 10.0
-      sensor_timeout: 1.0
+      sensor_timeout: 0.5      # s desde la CAPTURA del dato (PX4 CP: 0.5 s); más viejo = sin datos
       hold_on_sensor_loss: true
       require_sensors: true    # no despegar si no llegan /obstacles/sectors
       on_failure: return       # return | hold | skip

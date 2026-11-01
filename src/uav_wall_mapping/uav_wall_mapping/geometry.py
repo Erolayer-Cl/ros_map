@@ -85,6 +85,29 @@ def quat_from_yaw(yaw):
     return [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)]
 
 
+def quat_slerp(q0, q1, tau):
+    """Interpolación esférica entre dos cuaterniones [w, x, y, z] (tau en 0..1)."""
+    a = np.asarray(q0, dtype=float)
+    b = np.asarray(q1, dtype=float)
+    dot = float(np.dot(a, b))
+    if dot < 0.0:          # el camino corto: q y -q son la misma rotación
+        b = -b
+        dot = -dot
+    if dot > 0.9995:       # casi iguales: lineal + normalizar (evita dividir por ~0)
+        out = a + (b - a) * tau
+        return out / np.linalg.norm(out)
+    theta = math.acos(min(1.0, dot))
+    s = math.sin(theta)
+    return (math.sin((1.0 - tau) * theta) * a + math.sin(tau * theta) * b) / s
+
+
+def body_to_world(points_body, position_ned, q_body_to_ned):
+    """Puntos (N, 3) en el marco del cuerpo FRD -> mundo NED."""
+    rot = quat_to_rot(q_body_to_ned)
+    pts = np.asarray(points_body, dtype=float).reshape(-1, 3)
+    return pts @ rot.T + np.asarray(position_ned, dtype=float).reshape(3)
+
+
 def yaw_from_quat(q):
     """Yaw (rumbo NED) de un cuaternión FRD->NED."""
     w, x, y, z = (float(v) for v in q)
@@ -126,6 +149,18 @@ class SensorMount:
         # sensor nativo -> sensor FRD -> cuerpo FRD
         self.rotation = rot_from_rpy(roll, pitch, yaw) @ AXES_TO_FRD[axes]
         self.axes = axes
+
+    def to_body(self, points_sensor):
+        """Puntos del sensor (N, 3) -> marco del cuerpo FRD (centro del dron)."""
+        pts = np.asarray(points_sensor, dtype=float).reshape(-1, 3)
+        return pts @ self.rotation.T + self.position_frd
+
+    def heading_offset(self):
+        """Rumbo del eje del sensor respecto de la nariz del dron (rad)."""
+        return math.atan2(self.rotation[1, 0], self.rotation[0, 0])
+
+    def origin_world(self, position_ned, q_body_to_ned):
+        return quat_to_rot(q_body_to_ned) @ self.position_frd + np.asarray(position_ned, dtype=float)
 
     def to_world(self, points_sensor, position_ned, q_body_to_ned):
         """Lleva puntos del sensor (N, 3) al mundo NED.
