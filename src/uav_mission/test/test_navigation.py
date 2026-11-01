@@ -10,7 +10,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'uav_wall_mapping'))
 
-from uav_mission.avoidance import AvoidConfig, VfhAvoider  # noqa: E402
+from uav_mission.avoidance import (AvoidConfig, VfhAvoider, braking_distance,  # noqa: E402
+                                   max_safe_speed)
 from uav_mission.exploration import find_frontiers, lawnmower_waypoints  # noqa: E402
 from uav_mission.planner import GridPlanner, path_lookahead  # noqa: E402
 from uav_wall_mapping.occupancy import GridSnapshot  # noqa: E402
@@ -58,6 +59,70 @@ class AvoidanceTest(unittest.TestCase):
         cmd = self.avoider.update(np.full(72, 1.5), 0.0, 10.0, 0.0)
         self.assertTrue(cmd.blocked)
         self.assertIsNone(cmd.direction)
+
+
+class BrakingTest(unittest.TestCase):
+    """Frenado físico: v_max(d) = −a·t + √((a·t)² + 2·a·d)."""
+
+    def test_max_speed_inverts_braking_distance(self):
+        for v in (0.5, 1.5, 3.0, 8.0):
+            for a, t in ((1.0, 0.4), (3.0, 0.1), (2.0, 0.9)):
+                d = braking_distance(v, a, t)
+                self.assertAlmostEqual(max_safe_speed(d, a, t), v, places=6)
+        self.assertEqual(max_safe_speed(-0.5, 1.0, 0.4), 0.0)
+
+    def test_px4_cp_example(self):
+        # Ejemplo de la doc de investigación (PX4 CP sin jerk): 2 m libres,
+        # a = 3 m/s², sin retardo -> sqrt(2·3·2) = 3.46 m/s.
+        self.assertAlmostEqual(max_safe_speed(2.0, 3.0, 0.0), math.sqrt(12.0), places=6)
+
+    def test_speed_limit_falls_with_distance_and_latency(self):
+        avoider = VfhAvoider(AvoidConfig(max_decel=1.0, latency=0.4))
+        ranges = free_sectors()
+        ranges[0] = 4.0                      # pared al frente a 4 m
+        near = avoider.update(ranges, 0.0, 20.0, 0.0)
+        ranges[0] = 8.0
+        far = avoider.update(ranges, 0.0, 20.0, 0.0)
+        old = avoider.update(ranges, 0.0, 20.0, 0.0, data_age=0.6)
+        self.assertLess(near.max_speed, far.max_speed)
+        self.assertLess(old.max_speed, far.max_speed)
+        # Con lo libre exactamente igual a la distancia a mantener, no se avanza.
+        ranges[0] = avoider.keep_distance()
+        self.assertAlmostEqual(avoider.limit_for(ranges, 0.0)[1], 0.0, places=6)
+
+    def test_side_wall_does_not_brake(self):
+        avoider = VfhAvoider(AvoidConfig())
+        ranges = free_sectors()
+        ranges[15:22] = 1.6                  # pared paralela 1.6 m al este, yendo al norte
+        cmd = avoider.update(ranges, 0.0, 20.0, 0.0)
+        self.assertFalse(cmd.deviated)
+        self.assertEqual(cmd.max_speed, INF)
+
+    def test_lookahead_grows_with_speed(self):
+        avoider = VfhAvoider(AvoidConfig(lookahead=4.0, max_decel=1.0, latency=0.4))
+        ranges = free_sectors()
+        ranges[0] = 7.0                      # obstáculo a 7 m: a 1 m/s no importa
+        slow = avoider.update(ranges, 0.0, 30.0, 0.0, speed=1.0)
+        fast = avoider.update(ranges, 0.0, 30.0, 0.0, speed=4.0)
+        self.assertFalse(slow.deviated)
+        self.assertTrue(fast.deviated)
+        self.assertGreater(fast.block_range, 7.0)
+
+    def test_sensor_range_caps_speed(self):
+        avoider = VfhAvoider(AvoidConfig(max_decel=1.0, latency=0.4))
+        cmd = avoider.update(free_sectors(), 0.0, 30.0, 0.0, sensor_range=6.0)
+        self.assertAlmostEqual(cmd.max_speed, max_safe_speed(6.0 - avoider.keep_distance(),
+                                                             1.0, 0.4), places=6)
+
+    def test_obstacle_beside_corridor_does_not_stop(self):
+        # Esquina a 1 m, 75° del rumbo: el VFH deja pasar (queda a 0.97 m del
+        # eje, fuera del corredor de 0.95 m) y el frenado no tiene que trabar.
+        avoider = VfhAvoider(AvoidConfig())
+        ranges = free_sectors()
+        ranges[15] = 1.0
+        cmd = avoider.update(ranges, 0.0, 20.0, 0.0)
+        self.assertFalse(cmd.deviated)
+        self.assertEqual(cmd.max_speed, INF)
 
 
 def u_trap_snapshot():

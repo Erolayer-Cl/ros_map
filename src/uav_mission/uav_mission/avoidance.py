@@ -16,6 +16,16 @@ libres, no la forma.
 El esquive local no resuelve trampas en U ni laberintos: eso lo hace el
 planificador global A* sobre el mapa (`planner.py`). Acá sólo se decide la
 dirección de los próximos metros.
+
+**Frenado físico** (como la Collision Prevention de PX4 y `AC_Avoid` de
+ArduPilot, ver docs/evasion-entornos-reales.md): la velocidad no baja con una
+rampa fija entre dos distancias, sino con lo que hace falta para frenar a
+tiempo: con `d` libres en la dirección de avance,
+`v_max = −a·t + √((a·t)² + 2·a·(d − d_keep))`, donde `a` es la desaceleración
+supuesta (`max_decel`), `t` la latencia configurada más la edad del dato y
+`d_keep` la distancia a la que tiene que quedar quieto. Y el alcance con el que
+un obstáculo "tapa" sectores crece con la distancia de frenado: a 5 m/s se mira
+mucho más lejos que a 1 m/s.
 """
 
 import math
@@ -34,24 +44,56 @@ def angle_diff(a, b):
     return abs(wrap_pi(a - b))
 
 
+def braking_distance(speed, decel, delay):
+    """Distancia que recorre el dron hasta quedar quieto: `v·t + v²/(2a)`.
+
+    `delay` (s) es todo lo que pasa antes de que empiece a frenar de verdad:
+    edad del dato del sensor + procesamiento + seguimiento del controlador
+    (lo que PX4 llama `CP_DELAY`).
+    """
+    speed = max(0.0, float(speed))
+    return speed * max(0.0, delay) + speed * speed / (2.0 * max(decel, 1e-3))
+
+
+def max_safe_speed(distance, decel, delay):
+    """Velocidad máxima con la que se puede frenar en `distance` metros.
+
+    Es la inversa de `braking_distance`: v·t + v²/(2a) = d  =>
+    v = −a·t + √((a·t)² + 2·a·d). Misma fórmula que la Collision Prevention de
+    PX4 (`computeMaxSpeedFromDistance`, sin el término de jerk) y que
+    `AC_Avoid::get_max_speed` de ArduPilot con t = 0.
+    """
+    if not math.isfinite(distance):
+        return INF
+    if distance <= 0.0:
+        return 0.0
+    a = max(decel, 1e-3)
+    at = a * max(0.0, delay)
+    return -at + math.sqrt(at * at + 2.0 * a * distance)
+
+
 @dataclass
 class AvoidConfig:
     robot_radius: float = 0.45      # m: radio del dron contando hélices
     safety_margin: float = 0.5      # m extra alrededor de cada obstáculo
-    lookahead: float = 4.0          # m: más lejos que esto no bloquea
-    slow_distance: float = 3.5      # m: desde acá se empieza a frenar
-    stop_distance: float = 1.3      # m: con esto al frente no se avanza
+    lookahead: float = 4.0          # m: mínimo; se agranda con la distancia de frenado
+    stop_distance: float = 1.3      # m (desde el centro): con esto al frente no se avanza
     emergency_distance: float = 0.9  # m: más cerca que esto, alejarse
+    max_decel: float = 1.0          # m/s² que se suponen para frenar (ArduPilot usa ≤ 1)
+    latency: float = 0.4            # s sensor→frenado sin contar la edad del dato (PX4 CP_DELAY)
     goal_weight: float = 5.0
     heading_weight: float = 1.0
     previous_weight: float = 2.0
-    min_speed_scale: float = 0.25   # al bordear no frenar del todo
+    min_speed_scale: float = 0.25   # escala de velocidad al alejarse en una emergencia
 
 
 @dataclass
 class AvoidCommand:
     direction: float = None    # rumbo NED a seguir; None = no hay salida
     speed_scale: float = 1.0
+    max_speed: float = INF     # m/s: tope físico para poder frenar a tiempo
+    ahead: float = INF         # m libres en el corredor de la dirección elegida
+    block_range: float = 0.0   # m hasta donde un obstáculo tapa sectores
     deviated: bool = False     # True si no se va derecho al objetivo
     blocked: bool = False      # ningún sector libre
     emergency: bool = False    # algo demasiado cerca: alejarse
@@ -99,9 +141,66 @@ class VfhAvoider:
         window = np.asarray(ranges)[diff <= half_width]
         return float(window.min()) if window.size else INF
 
-    def update(self, ranges, goal_bearing, goal_distance, heading):
+    def keep_distance(self):
+        """Distancia (desde el centro del dron) a la que tiene que quedar frenado."""
+        c = self.cfg
+        return max(c.stop_distance, c.robot_radius + c.safety_margin)
+
+    def free_travel(self, ranges, bearing):
+        """Metros que se puede avanzar por `bearing` sin quedar a menos de
+        `keep_distance()` de ningún obstáculo del corredor de avance.
+
+        Cada sector se proyecta sobre la dirección de avance: un obstáculo a
+        distancia d y ángulo δ queda a `a = d·cos δ` por delante y a
+        `l = d·|sin δ|` del eje. Sólo cuentan los del corredor que barre el dron
+        (`l` < radio + margen, el mismo ancho con el que el VFH agranda los
+        obstáculos: lo que el VFH deja pasar por el costado no frena), y para
+        cada uno el dron puede avanzar `a − √(K² − l²)` antes de quedar a K de
+        él. Así una pared paralela al costado no frena, y una que se cruza en
+        el camino sí.
+        """
+        c = self.cfg
+        r = np.asarray(ranges, dtype=float)
+        finite = np.isfinite(r)
+        if not np.any(finite):
+            return INF
+        r = r[finite]
+        delta = np.arctan2(np.sin(self.centers[finite] - bearing),
+                           np.cos(self.centers[finite] - bearing))
+        along = r * np.cos(delta)
+        lateral = r * np.abs(np.sin(delta))
+        hit = (along > 0.0) & (lateral < c.robot_radius + c.safety_margin)
+        if not np.any(hit):
+            return INF
+        keep = self.keep_distance()
+        travel = along[hit] - np.sqrt(np.maximum(keep * keep - lateral[hit] ** 2, 0.0))
+        return float(travel.min())
+
+    def limit_for(self, ranges, bearing, data_age=0.0, sensor_range=INF):
+        """`(avance_libre, v_max)` para ir por `bearing` con sectores de esta edad.
+
+        Si en el corredor no hay nada, lo libre llega hasta el alcance del
+        sensor (`sensor_range`): más allá no se sabe, y a esa velocidad hay que
+        poder frenar antes de lo que aparezca en el borde.
+        """
+        c = self.cfg
+        travel = min(self.free_travel(ranges, bearing), sensor_range - self.keep_distance())
+        delay = c.latency + max(0.0, float(data_age))
+        return travel, max_safe_speed(travel, c.max_decel, delay)
+
+    def update(self, ranges, goal_bearing, goal_distance, heading, speed=0.0, data_age=0.0,
+               sensor_range=INF):
+        """Decide la dirección y el tope de velocidad del próximo ciclo.
+
+        `speed`: velocidad horizontal actual o pedida, la mayor (m/s): define
+        hasta dónde hay que mirar. `data_age`: edad de los sectores (s): se suma
+        a `latency` porque el dron siguió moviéndose desde que se midieron.
+        `sensor_range`: alcance de los sectores; un corredor libre se toma como
+        libre sólo hasta ahí (más allá no se sabe).
+        """
         c = self.cfg
         ranges = np.asarray(ranges, dtype=float)
+        delay = c.latency + max(0.0, float(data_age))
         nearest_idx = int(np.argmin(ranges))
         nearest = float(ranges[nearest_idx])
         cmd = AvoidCommand(nearest=nearest, nearest_bearing=float(self.centers[nearest_idx]))
@@ -117,10 +216,15 @@ class VfhAvoider:
             self._previous = cmd.direction
             return cmd
 
+        # Hasta dónde mirar: nunca menos que lo que se tarda en frenar a la
+        # velocidad actual (con la latencia), más la distancia a mantener.
         # Un obstáculo más allá del objetivo no debería impedir llegar a él
         # (típico: una frontera de exploración pegada a una pared).
         inflate = c.robot_radius + c.safety_margin
-        block_range = min(c.lookahead, goal_distance + inflate)
+        look = max(c.lookahead,
+                   braking_distance(speed, c.max_decel, delay) + self.keep_distance())
+        block_range = min(look, goal_distance + inflate)
+        cmd.block_range = block_range
         blocked = self.blocked_mask(ranges, block_range)
 
         if not blocked[self._bin(goal_bearing)]:
@@ -130,6 +234,7 @@ class VfhAvoider:
             free = np.nonzero(~blocked)[0]
             if free.size == 0:
                 cmd.blocked = True
+                cmd.max_speed = 0.0
                 cmd.reason = 'rodeado: ningún sector libre'
                 self._previous = None
                 return cmd
@@ -149,11 +254,9 @@ class VfhAvoider:
             cmd.reason = (f'bordeando por la {side} '
                           f'({math.degrees(angle_diff(cmd.direction, goal_bearing)):.0f}° del objetivo)')
 
-        ahead = self.clearance(ranges, cmd.direction)
-        span = max(c.slow_distance - c.stop_distance, 1e-3)
-        scale = min(1.0, max(0.0, (ahead - c.stop_distance) / span))
-        if cmd.deviated:
-            scale = max(scale, c.min_speed_scale)
-        cmd.speed_scale = scale
+        # Frenado físico: lo libre en el corredor de avance (o el alcance del
+        # sensor, si no hay nada) tiene que alcanzar para frenar a tiempo.
+        cmd.ahead, cmd.max_speed = self.limit_for(ranges, cmd.direction, data_age, sensor_range)
+        cmd.speed_scale = 1.0
         self._previous = cmd.direction
         return cmd

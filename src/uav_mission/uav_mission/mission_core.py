@@ -67,6 +67,7 @@ DEFAULTS = {
     'climb_speed': 1.0,
     'acceptance_radius': 0.8,
     'max_lead': 1.5,                    # m que la zanahoria puede adelantarse al dron
+    'nav.lead_time': 1.0,               # s: además, la zanahoria no se adelanta más que v·esto
     'arm_timeout': 15.0,
     'control_rate': 20.0,
     'nav.accel_ramp_sec': 1.5,
@@ -90,10 +91,11 @@ DEFAULTS = {
     'avoid.enabled': True,
     'avoid.robot_radius': 0.45,
     'avoid.safety_margin': 0.5,
-    'avoid.lookahead': 4.0,
-    'avoid.slow_distance': 3.5,
-    'avoid.stop_distance': 1.3,
+    'avoid.lookahead': 4.0,             # m mínimos; crece con la distancia de frenado
+    'avoid.stop_distance': 1.3,         # m desde el centro: frenado del todo
     'avoid.emergency_distance': 0.9,
+    'avoid.max_decel': 1.0,             # m/s² supuestos para frenar (ArduPilot: ≤ 1)
+    'avoid.latency': 0.4,               # s sensor→frenado, sin la edad del dato (PX4 CP_DELAY)
     'avoid.trigger_hold': 0.2,          # s que el desvío tiene que persistir
     'avoid.emergency_hold': 0.15,
     'avoid.blocked_timeout': 10.0,      # s rodeado antes de dar el objetivo por perdido
@@ -148,6 +150,7 @@ class MissionCore:
         self._sectors = None
         self._sectors_stamp = -math.inf
         self._sectors_ever = False
+        self._sectors_range = math.inf
         self.snapshot = None
         self.walls_summary = (0, 0, 0)
 
@@ -202,6 +205,8 @@ class MissionCore:
         self._sensor_loss_warned = False
         self._nearest = math.inf
         self._nearest_bearing = 0.0
+        self._speed_cap = math.inf
+        self._ahead = math.inf
 
         self._map_area = None
         self._map_start = 0.0
@@ -226,9 +231,10 @@ class MissionCore:
             robot_radius=self.p('avoid.robot_radius'),
             safety_margin=self.p('avoid.safety_margin'),
             lookahead=self.p('avoid.lookahead'),
-            slow_distance=self.p('avoid.slow_distance'),
             stop_distance=self.p('avoid.stop_distance'),
-            emergency_distance=self.p('avoid.emergency_distance'))
+            emergency_distance=self.p('avoid.emergency_distance'),
+            max_decel=self.p('avoid.max_decel'),
+            latency=self.p('avoid.latency'))
 
     def make_planner(self):
         """El nodo y el simulador construyen el planificador con esto, para que
@@ -279,10 +285,13 @@ class MissionCore:
                 and self.state != State.ARMING and not self._land_requested):
             self._enter(State.PREEMPTED, 'el dron salió de OFFBOARD desde afuera: control cedido')
 
-    def update_sectors(self, ranges, stamp):
+    def update_sectors(self, ranges, stamp, range_max=math.inf):
+        """Sectores de obstáculos. `stamp`: instante de CAPTURA del dato más
+        nuevo que los formó (no el de llegada): con eso se sabe su edad."""
         self._sectors = np.asarray(ranges, dtype=float)
         self._sectors_stamp = float(stamp)
         self._sectors_ever = True
+        self._sectors_range = float(range_max) if range_max and range_max > 0 else math.inf
         if len(self._sectors) != self.avoider.n_bins:
             self.avoider = VfhAvoider(self._avoid_config(), n_bins=len(self._sectors))
 
@@ -298,6 +307,9 @@ class MissionCore:
 
     def _sectors_fresh(self, now):
         return self._sectors is not None and now - self._sectors_stamp <= self.p('avoid.sensor_timeout')
+
+    def _sectors_age(self, now):
+        return max(0.0, now - self._sectors_stamp) if self._sectors is not None else math.inf
 
     # ------------------------------------------------------------------
     # Servicios
@@ -767,16 +779,30 @@ class MissionCore:
         direction, scale = desired, 1.0
         self._avoid_active = False
         self._avoid_reason = ''
+        cruise = self._ramped_speed(now)
+        cap = math.inf
 
         if self.p('avoid.enabled'):
             if self._sectors_fresh(now):
                 self._sensor_loss_warned = False
-                cmd = self.avoider.update(self._sectors, desired, dist, self.heading)
+                age = self._sectors_age(now)
+                # Para decidir hasta dónde mirar: la velocidad real o la pedida,
+                # la mayor (con viento de cola o zanahoria adelantada, la real
+                # supera a la pedida).
+                speed_ref = max(math.hypot(self.velocity[0], self.velocity[1]), cruise)
+                cmd = self.avoider.update(self._sectors, desired, dist, self.heading,
+                                          speed=speed_ref, data_age=age,
+                                          sensor_range=self._sectors_range)
                 self._nearest, self._nearest_bearing = cmd.nearest, cmd.nearest_bearing
                 direction, scale, hold = self._apply_avoidance(cmd, desired, now)
                 if hold:
                     self._freeze()
                     return
+                if not cmd.emergency:
+                    # Tope físico en la dirección que de verdad se va a seguir
+                    # (durante el debounce puede no ser la que propuso el VFH).
+                    self._ahead, cap = self.avoider.limit_for(
+                        self._sectors, direction, age, self._sectors_range)
             elif self._sectors_ever and self.p('avoid.hold_on_sensor_loss'):
                 if not self._sensor_loss_warned:
                     self.log('warn', 'se cortaron los datos de obstáculos: frenando en el lugar')
@@ -787,7 +813,8 @@ class MissionCore:
                 self._freeze()
                 return
 
-        speed = self._ramped_speed(now) * scale
+        speed = min(cruise * scale, cap)
+        self._speed_cap = cap
         if (self._avoid_dir_prev is not None
                 and angle_diff(direction, self._avoid_dir_prev) > math.radians(25)):
             # Cambio brusco de dirección: la zanahoria vieja quedó apuntando
@@ -886,16 +913,21 @@ class MissionCore:
     # Zanahoria
     # ------------------------------------------------------------------
     def _advance_carrot(self, direction, speed, stop_at=None):
+        # La zanahoria no se adelanta más que `v·lead_time`: el controlador de
+        # posición de PX4 suma ~MPC_XY_P·(distancia a la zanahoria) a la
+        # velocidad, así que una zanahoria lejos con la velocidad ya recortada
+        # por el frenado seguiría empujando al dron hacia el obstáculo.
+        lead = min(float(self.p('max_lead')), speed * float(self.p('nav.lead_time')))
         step = speed * self._dt
         if stop_at is not None:
             remaining = distance_2d(self._carrot, stop_at)
             if remaining <= step:
                 self._carrot[0], self._carrot[1] = stop_at
-                self._clamp_lead()
+                self._clamp_lead(lead)
                 return
         self._carrot[0] += math.cos(direction) * step
         self._carrot[1] += math.sin(direction) * step
-        self._clamp_lead()
+        self._clamp_lead(lead)
 
     def _freeze(self):
         self._carrot[0], self._carrot[1] = self.position[0], self.position[1]
@@ -906,8 +938,9 @@ class MissionCore:
         step = float(self.p('climb_speed')) * self._dt
         self._carrot[2] += math.copysign(min(abs(delta), step), delta)
 
-    def _clamp_lead(self):
-        max_lead = float(self.p('max_lead'))
+    def _clamp_lead(self, max_lead=None):
+        if max_lead is None:
+            max_lead = float(self.p('max_lead'))
         dn = self._carrot[0] - self.position[0]
         de = self._carrot[1] - self.position[1]
         lead = math.hypot(dn, de)
