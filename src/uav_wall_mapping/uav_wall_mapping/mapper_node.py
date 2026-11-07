@@ -133,6 +133,8 @@ class MapperNode(Node):
             sectors_from_map=p('sectors.from_map').value,
             forget_after=p('map.forget_after').value,
             forget_max_hits=p('map.forget_max_hits').value,
+            weak_protect_sec=p('map.weak_protect_sec').value,
+            traversed_radius=p('map.traversed_radius').value,
             walls={k: p(f'walls.{k}').value for k in WALL_PARAMS},
         )
         self.mapper = WallMapper(cfg)
@@ -230,6 +232,8 @@ class MapperNode(Node):
         d('map.free_ray_bins', 360)
         d('map.sensor_fov_deg', 360.0)
         d('map.min_range', 0.5)
+        d('map.weak_protect_sec', 2.0)   # s: rayos sin eco no vacían celdas vistas hace menos
+        d('map.traversed_radius', 0.8)   # m alrededor del camino recorrido que se dan por conocidos
         # Caja del propio dron, cuerpo FRD [xmin, xmax, ymin, ymax, zmin, zmax]
         # (z+ abajo). Medir: hélices, patas, mástil. [] = sin filtro.
         d('self_filter.box', [-0.5, 0.5, -0.5, 0.5, -0.35, 0.4])

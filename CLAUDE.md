@@ -86,6 +86,17 @@ Después de cambiar un `.msg`: `rm -rf build/uav_map_msgs install/uav_map_msgs`.
     siempre deja fantasmas de lo que se mueve (QA 7a/7c/7d).
   - No agregar histéresis al debounce del desvío: se probó para el cable y
     produjo un choque con ráfagas (QA 6e).
+  - `no_hit_free_range` del lidar se queda en 6 m: con 15 m se borraba el rastro
+    de lo que se movió (QA 7b) pero aparecieron 2 choques (1f, 5f).
+  - El espacio por el que pasó el dron se da por conocido (`traversed_radius`,
+    sólo celdas desconocidas, valor 50 % para no crear fronteras): con una cámara
+    lo pegado al dron nunca se ve y la exploración volvía a esas "fronteras".
+  - Fronteras: libre = conocido y < 50 % (con cámara los bordes se ven una vez y
+    quedan en ~40 %). Una frontera elegida 3 veces en el mismo lugar se descarta.
+  - Paso angosto: el A* marca `narrow` sólo si el camino pasa entre obstáculos
+    A AMBOS LADOS a menos de radio + margen del VFH (marcarlo junto a una sola
+    pared bajaba los márgenes en la trampa en U). En ese modo el VFH usa margen
+    chico y la prueba de corredor, con histéresis de `plan.narrow_hold`.
 
 ## Trabajo en curso: evasión para entornos reales
 
@@ -105,13 +116,14 @@ Estado:
   ruido, sectores vistos/scaleToFOV, failsafes, mapper sin bloqueo, simulación
   de entorno real (5 escenarios nuevos), puertas de 2 m, rayos sin eco como
   evidencia débil, y `docs/evasion-entornos-reales.md`.
-- Revisión con pruebas: `TODOS=1 ./run_tests.sh` OK (79 unitarias + 14
-  escenarios). Arnés QA de 65 casos: 60 sin falla y 0 choques (versión
-  original: 39 sin falla y 5 choques). Siguen fallando: puertas de 1.2-1.5 m
-  (2a/2b/2f; ancho mínimo de paso ≈ 2 m), caja que se detiene y se va (7b,
-  mapa con fantasma; el olvido `map.forget_after` está apagado porque borra
-  celdas reales) y mapeo con cámara en la habitación (9c, ciclo entre
-  fronteras).
+- Revisión con pruebas y arreglos: `TODOS=1 ./run_tests.sh` OK (84 unitarias
+  + 14 escenarios). Arnés de QA ahora en el repo (`qa/`, ver `qa/README.md`):
+  61/65 sin falla y 0 choques (original: 39/65 y 5 choques). Arreglado en la
+  última ronda: puerta de 1.5 m (modo de paso angosto), mapeo con cámara que
+  quedaba en un ciclo o a medias (espacio recorrido, umbral de frontera,
+  límite de repeticiones, `no_hit_free_range` 3 m en la config de cámara).
+  Límites conocidos: puertas de 1.2 m (2a/2f), rastro de una caja que se fue
+  lejos del camino (7b), cámara configurada como lidar (9d, lenta).
 - Pendiente: probar con ROS 2 real / Unreal / vuelo.
   Lo no cubierto (vidrio, cables, deskew por punto → FAST-LIO2, evasión
   vertical, batería, predicción de dinámicos, mapeo con cámara: livelock entre

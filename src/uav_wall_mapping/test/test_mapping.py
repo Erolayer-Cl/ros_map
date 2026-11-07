@@ -111,6 +111,17 @@ class GridTest(unittest.TestCase):
                         weak_ends_ne=weak)
         self.assertLess(grid.snapshot().value_at(5.05, 0.05), 65)
 
+    def test_traversed_space_becomes_known_without_erasing_walls(self):
+        grid = OccupancyGrid2D(resolution=0.15, initial_size=10.0)
+        wall = np.array([[0.45, 0.0]])
+        for k in range(3):
+            grid.update((0.0, 0.0), wall, wall, stamp=float(k))
+        grid.mark_traversed((0.0, 0.0), 0.8)
+        snap = grid.snapshot()
+        self.assertGreaterEqual(snap.value_at(0.5, 0.05), 65)     # la pared sigue
+        self.assertEqual(snap.value_at(-0.5, 0.3), 50)             # lo recorrido: conocido, neutro
+        self.assertEqual(snap.value_at(-2.0, 0.0), -1)             # lo lejano sigue desconocido
+
     def test_empty_sector_does_not_carve_through_neighbor_wall(self):
         """Un sector sin impacto entre dos con pared no se talla a través de ella."""
         hits = np.array([[3.0, -0.05], [3.0, 0.05]])

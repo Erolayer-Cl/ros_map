@@ -1,0 +1,16 @@
+# QA 1: poste fino (radio 5 cm) justo en el camino. Corrido 0.2 m del eje para
+# que el haz de 0° del lidar no lo "pinche" siempre por casualidad.
+nombre: qa_poste_fino
+descripcion: Poste de 5 cm de radio y 5 m de alto a 10 m al norte; waypoint detrás.
+objetos:
+  - tipo: cilindro
+    nombre: poste
+    centro: [10.0, 0.2]
+    radio: 0.05
+    alto: 5.0
+mision:
+  tipo: waypoints
+  altura: 3.0
+  waypoints:
+    - [20.0, 0.0]
+  area: [-3.0, -10.0, 22.0, 10.0]

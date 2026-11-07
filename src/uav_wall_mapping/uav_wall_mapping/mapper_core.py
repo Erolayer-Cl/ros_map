@@ -33,7 +33,9 @@ class MapperConfig:
     max_height_above_drone: float = 1.0  # m sobre el DRON: tope de la grilla 2D (techos,
     #                                   aleros, copas: el dron pasa por debajo). <= 0: sólo
     #                                   max_height. El mapa 3D guarda todo igual.
-    no_hit_free_range: float = 6.0    # m que se dan por libres en sectores sin impacto
+    no_hit_free_range: float = 6.0    # m que se dan por libres en sectores sin impacto (evidencia
+    #                                   débil: ver `weak_protect_sec`). 15 m borraba el rastro de
+    #                                   lo que se movió (QA 7b) pero dio 2 choques (1f, 5f)
     free_ray_bins: int = 360          # sectores del tallado de espacio libre: NO más finos
     #                                   que la resolución horizontal del sensor
     free_ray_neighbors: int = 3       # sectores vecinos que limitan el tallado de un sector vacío
@@ -77,6 +79,9 @@ class MapperConfig:
     # --- paredes ---
     walls: dict = field(default_factory=dict)   # kwargs para WallExtractor
     trajectory_step: float = 0.3      # m entre puntos guardados de la trayectoria
+    weak_protect_sec: float = 2.0     # s: un rayo sin eco no vacía celdas con impactos recientes
+    traversed_radius: float = 0.8     # m alrededor del camino recorrido que se dan por
+    #                                   conocidos si nadie los vio (0 = no)
 
 
 @dataclass
@@ -137,7 +142,8 @@ class WallMapper:
         c = self.cfg
         self.grid = OccupancyGrid2D(resolution=c.resolution, initial_size=c.initial_size,
                                     max_size=c.max_size, hit_logodds=c.hit_logodds,
-                                    miss_logodds=c.miss_logodds)
+                                    miss_logodds=c.miss_logodds,
+                                    weak_protect_sec=c.weak_protect_sec)
         self.voxels = VoxelMap3D(resolution=c.voxel_resolution)
         wall_kwargs = dict(resolution=c.resolution)
         wall_kwargs.update(c.walls or {})
@@ -189,6 +195,10 @@ class WallMapper:
         if (not self.trajectory
                 or math.dist(p, self.trajectory[-1]) >= self.cfg.trajectory_step):
             self.trajectory.append(p)
+            # Sólo en vuelo (más de 0.5 m sobre el despegue): en tierra el dron
+            # todavía no "recorrió" nada.
+            if self.home_down - p[2] > 0.5:
+                self.grid.mark_traversed(p[:2], self.cfg.traversed_radius)
 
     # ------------------------------------------------------------------
     def integrate_sensor(self, points_sensor, mount, position_ned, q, stamp, source='lidar',

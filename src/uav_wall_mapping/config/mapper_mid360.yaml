@@ -35,7 +35,7 @@
       min_height: 0.3
       max_height: 8.0
       max_height_above_drone: 1.0   # techo de la grilla 2D relativo al dron (interiores)
-      no_hit_free_range: 6.0
+      no_hit_free_range: 6.0        # evidencia débil: no borra lo visto en los últimos 2 s
       sensor_fov_deg: 360.0
       min_range: 0.4          # el Mid-360 ve hasta 0.1 m: descartar hélices/patas
       max_range: 40.0

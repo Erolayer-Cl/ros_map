@@ -28,7 +28,7 @@
       min_height: 0.3         # m sobre el despegue: lo de abajo es piso
       max_height: 8.0         # m sobre el despegue: tope absoluto de la grilla 2D
       max_height_above_drone: 1.0  # m sobre el DRON: el techo y lo que está arriba no es obstáculo
-      no_hit_free_range: 6.0  # m que se dan por libres donde el lidar no choca
+      no_hit_free_range: 6.0  # m libres donde el lidar no choca (evidencia débil, ver weak_protect_sec)
       sensor_fov_deg: 360.0
       min_range: 0.5          # m: descarta impactos contra el propio dron
       max_range: 40.0

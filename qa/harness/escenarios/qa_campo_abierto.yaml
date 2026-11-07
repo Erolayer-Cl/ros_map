@@ -1,0 +1,11 @@
+# QA 7: campo abierto sin obstáculos fijos. El obstáculo dinámico (una caja
+# que se mueve) lo agrega el harness, no el YAML.
+nombre: qa_campo_abierto
+descripcion: Campo abierto; waypoint a 20 m al norte. El harness agrega una caja móvil.
+objetos: []
+mision:
+  tipo: waypoints
+  altura: 3.0
+  waypoints:
+    - [20.0, 0.0]
+  area: [-3.0, -12.0, 22.0, 12.0]

@@ -93,6 +93,11 @@ DEFAULTS = {
     'avoid.safety_margin': 0.35,
     'avoid.lookahead': 4.0,             # m mínimos; crece con la distancia de frenado
     'avoid.stop_distance': 1.3,         # m desde el centro: frenado del todo
+    'plan.narrow_inflation_radius': 0.55,   # m: 2º intento del A* (0 = no); radio + 10 cm
+    'plan.narrow_speed': 0.5,
+    'plan.narrow_hold': 4.0,                # s que se mantiene el modo angosto tras el último aviso               # m/s máximos por un paso angosto
+    'avoid.narrow_safety_margin': 0.1,      # m de margen del VFH en un paso angosto
+    'avoid.narrow_emergency_distance': 0.5, # m de huida en un paso angosto (> radio)
     'avoid.emergency_distance': 0.7,    # < radio + margen: si no, bordear dispara la huida
     'avoid.escape_speed': 0.75,         # m/s al alejarse (ArduPilot AVOID_BACKUP_SPD)
     'avoid.seen_timeout': 1.0,          # s: un sector no mirado en este tiempo es desconocido
@@ -121,6 +126,7 @@ DEFAULTS = {
     'map_mission.return_home': True,
     'map_mission.goal_timeout': 60.0,
     'map_mission.max_goal_failures': 12,
+    'map_mission.max_frontier_repeats': 3,
     'scan.yaw_rate': 0.6,
     # --- failsafes (docs/evasion-entornos-reales.md) ---
     'nav.pose_timeout': 0.5,            # s sin posición válida de PX4: frenar (hold)
@@ -212,6 +218,8 @@ class MissionCore:
         self._plan_failures = 0
         self._plan_reason = ''
         self._goal_reachable = None
+        self._narrow = False
+        self._narrow_until = -math.inf
 
         self._avoid_dir_prev = None
         self._deviate_since = None
@@ -238,6 +246,7 @@ class MissionCore:
         self._map_start = 0.0
         self._lanes = []
         self._blacklist = []
+        self._chosen_frontiers = []
         self._goal_failures = 0
         self.goals_reached = 0
         self.coverage = 0.0
@@ -271,7 +280,10 @@ class MissionCore:
                            cost_radius=self.p('plan.cost_radius'),
                            unknown_penalty=self.p('plan.unknown_penalty'),
                            max_expansions=int(self.p('plan.max_expansions')),
-                           window_margin=self.p('plan.window_margin'))
+                           window_margin=self.p('plan.window_margin'),
+                           narrow_inflation_radius=self.p('plan.narrow_inflation_radius'),
+                           narrow_clearance=(self.p('avoid.robot_radius')
+                                             + self.p('avoid.safety_margin')))
 
     def _load_waypoints(self):
         flat = [float(v) for v in (self.p('waypoints') or [])]
@@ -332,6 +344,7 @@ class MissionCore:
         self._sectors_range = float(range_max) if range_max and range_max > 0 else math.inf
         if len(self._sectors) != self.avoider.n_bins:
             self.avoider = VfhAvoider(self._avoid_config(), n_bins=len(self._sectors))
+            self._narrow = False
 
     def update_map(self, snapshot):
         self.snapshot = snapshot
@@ -457,6 +470,7 @@ class MissionCore:
         self._goal = None
         self._path = None
         self._blacklist = []
+        self._chosen_frontiers = []
         self._goal_failures = 0
         self.goals_reached = 0
         self._land_requested = False
@@ -505,6 +519,8 @@ class MissionCore:
         self._goal_started = now
         self._path = None
         self._goal_reachable = None
+        self._narrow_until = -math.inf
+        self._set_narrow(False)
         self._plan_failures = 0
         self._blocked_since = None
         self._reset_progress(now)
@@ -819,11 +835,30 @@ class MissionCore:
         if self.snapshot is None:
             return None
         min_cells = max(2, int(self.p('map_mission.min_frontier_length') / self.snapshot.resolution))
+        # Libre = cualquier celda conocida que tienda a libre (< 50 %): con una
+        # cámara, el borde de lo visto se observa una sola vez y queda en ~40 %;
+        # con el umbral de 35 % esos bordes no contaban como frontera y el mapeo
+        # terminaba con la habitación a medio ver (QA 9c). Las celdas del camino
+        # recorrido quedan en 50 % justamente para no generar fronteras.
         frontiers = find_frontiers(self.snapshot, self._map_area, min_size=min_cells,
-                                   clearance=float(self.p('plan.inflation_radius')))
+                                   clearance=float(self.p('plan.inflation_radius')),
+                                   free_threshold=49)
         self.frontiers_open = len(frontiers)
         self.coverage = coverage(self.snapshot, self._map_area)
-        return select_frontier(frontiers, self.position[:2], self.heading, self._blacklist)
+        choice = select_frontier(frontiers, self.position[:2], self.heading, self._blacklist)
+        if choice is not None:
+            # Defensa contra ciclos: una frontera elegida una y otra vez en el
+            # mismo lugar (porque se "cierra" y se "reabre" con cada pasada) se
+            # da por inalcanzable a la tercera.
+            near = [g for g in self._chosen_frontiers
+                    if math.hypot(g[0] - choice.target[0], g[1] - choice.target[1]) < 1.0]
+            self._chosen_frontiers.append(choice.target)
+            if len(near) >= int(self.p('map_mission.max_frontier_repeats')):
+                self.log('warn', f'frontera ({choice.target[0]:.1f}, {choice.target[1]:.1f}) '
+                                 'elegida demasiadas veces: se descarta')
+                self._blacklist.append(choice.target)
+                return select_frontier(frontiers, self.position[:2], self.heading, self._blacklist)
+        return choice
 
     def _frontier_still_open(self):
         """¿Queda algo desconocido cerca del objetivo? Con un lidar de 40 m la
@@ -924,6 +959,11 @@ class MissionCore:
         if request_id != self._goal_id:
             return
         if result.ok:
+            # Histéresis: el despeje medido en cada replanificación varía unos
+            # centímetros y el modo se prendía y apagaba frente a la puerta.
+            if getattr(result, 'narrow', False):
+                self._narrow_until = now + float(self.p('plan.narrow_hold'))
+            self._set_narrow(now < self._narrow_until)
             self._path = result.path
             self._path_goal_id = request_id
             self._plan_failures = 0
@@ -939,6 +979,27 @@ class MissionCore:
                              f'({self._plan_failures}/{self.p("plan.max_failures")})')
             if self._plan_failures >= self.p('plan.max_failures') and self.state in MOVING_STATES:
                 self._on_goal_failed(now, f'planificador: {result.reason}')
+
+    def _set_narrow(self, narrow):
+        """Entra o sale del modo de paso angosto: el A* sólo encontró camino con
+        el margen mínimo (una puerta de 1.5 m para un dron de 0.9 m). En ese
+        tramo la evasión usa el margen y la distancia de huida angostos, y la
+        velocidad se limita a `plan.narrow_speed`. Sin esto el VFH ve la puerta
+        tapada (radio + margen normal = 0.8 m por lado) y el dron no cruza."""
+        if narrow == self._narrow:
+            return
+        self._narrow = narrow
+        cfg = self.avoider.cfg
+        if narrow:
+            cfg.safety_margin = float(self.p('avoid.narrow_safety_margin'))
+            cfg.emergency_distance = float(self.p('avoid.narrow_emergency_distance'))
+            cfg.corridor_mode = True
+            self.log('info', 'paso angosto: márgenes mínimos y velocidad reducida')
+        else:
+            cfg.safety_margin = float(self.p('avoid.safety_margin'))
+            cfg.emergency_distance = float(self.p('avoid.emergency_distance'))
+            cfg.corridor_mode = False
+            self.log('info', 'fin del paso angosto: márgenes normales')
 
     def _step_navigation(self, now):
         goal = self._goal
@@ -1047,6 +1108,8 @@ class MissionCore:
             self.message = self._avoid_reason
             return
         speed = min(cruise * scale, cap)
+        if self._narrow:
+            speed = min(speed, float(self.p('plan.narrow_speed')))
         self._speed_cap = cap
         if (self._avoid_dir_prev is not None
                 and angle_diff(direction, self._avoid_dir_prev) > math.radians(25)):

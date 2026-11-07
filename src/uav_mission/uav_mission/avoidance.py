@@ -84,6 +84,7 @@ class AvoidConfig:
     goal_weight: float = 5.0
     heading_weight: float = 1.0
     previous_weight: float = 2.0
+    corridor_mode: bool = False     # paso angosto: ir derecho si el corredor está libre
     escape_speed: float = 0.75      # m/s al alejarse en una emergencia (ArduPilot AVOID_BACKUP_SPD)
 
 
@@ -269,7 +270,15 @@ class VfhAvoider:
         cmd.block_range = block_range
         blocked = self.blocked_mask(ranges, block_range)
 
-        if not blocked[self._bin(goal_bearing)]:
+        # En un paso angosto (lo marca el A*: el camino pasa por un hueco más
+        # angosto que radio + margen normal) se confía en la prueba de corredor:
+        # desde lejos, el agrandado angular de los dos bordes de una puerta tapa
+        # el sector central por cuantización (sectores de 5°) aunque el dron
+        # entre de sobra por el medio.
+        goal_free = not blocked[self._bin(goal_bearing)]
+        if not goal_free and c.corridor_mode:
+            goal_free = self.free_travel(ranges, goal_bearing) > 0.5
+        if goal_free:
             cmd.direction = goal_bearing
             cmd.deviated = False
         else:

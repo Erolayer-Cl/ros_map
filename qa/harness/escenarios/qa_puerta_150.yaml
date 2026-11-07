@@ -1,0 +1,23 @@
+# QA 2: pared de 60 m (no se puede rodear dentro de la ventana de A*) con una
+# puerta de 150 cm centrada en el camino. Hay que cruzarla.
+nombre: qa_puerta_150
+descripcion: Pared de 60 m a 10 m al norte con una puerta de 150 cm en e=0.
+objetos:
+  - tipo: pared
+    nombre: pared_oeste
+    desde: [10.0, -30.0]
+    hasta: [10.0, -0.75]
+    alto: 5.0
+    espesor: 0.2
+  - tipo: pared
+    nombre: pared_este
+    desde: [10.0, 0.75]
+    hasta: [10.0, 30.0]
+    alto: 5.0
+    espesor: 0.2
+mision:
+  tipo: waypoints
+  altura: 2.0
+  waypoints:
+    - [16.0, 0.0]
+  area: [-3.0, -12.0, 20.0, 12.0]

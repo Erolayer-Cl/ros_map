@@ -1,0 +1,26 @@
+# QA 1b: "cable" horizontal de 3 cm x 3 cm a la altura de vuelo (3.0 m) colgado
+# entre dos postes de 10 cm separados 12 m. Se puede rodear por los costados.
+nombre: qa_cable
+descripcion: Cable de 3 cm a 3.0 m de altura entre dos postes (e=-6 y e=+6) a 10 m al norte.
+objetos:
+  - tipo: cilindro
+    nombre: poste_oeste
+    centro: [10.0, -6.0]
+    radio: 0.1
+    alto: 3.5
+  - tipo: cilindro
+    nombre: poste_este
+    centro: [10.0, 6.0]
+    radio: 0.1
+    alto: 3.5
+  - tipo: caja
+    nombre: cable
+    centro: [10.0, 0.0]
+    tamano: [0.03, 12.0, 0.03]
+    base: 2.985
+mision:
+  tipo: waypoints
+  altura: 3.0
+  waypoints:
+    - [20.0, 0.0]
+  area: [-3.0, -12.0, 22.0, 12.0]

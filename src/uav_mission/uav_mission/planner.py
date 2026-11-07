@@ -44,6 +44,8 @@ class PlanResult:
     reason: str = ''
     expansions: int = 0
     goal_adjusted: bool = False
+    narrow: bool = False      # el camino pasa por un hueco más angosto que el margen del VFH
+    clearance: float = float('inf')   # m: distancia mínima a un obstáculo a lo largo del camino
 
 
 def _dilate(mask):
@@ -83,11 +85,16 @@ def distance_cells(occupied, max_cells):
     return dist
 
 
+def _path_length(path):
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path[:-1], path[1:]))
+
+
 class GridPlanner:
 
     def __init__(self, resolution=0.3, inflation_radius=0.65, cost_radius=2.0,
                  proximity_weight=2.0, unknown_penalty=0.5, occupied_threshold=65,
-                 max_expansions=60000, window_margin=12.0, goal_tolerance=1.5):
+                 max_expansions=60000, window_margin=12.0, goal_tolerance=1.5,
+                 narrow_inflation_radius=0.0, narrow_clearance=0.0):
         self.resolution = float(resolution)
         self.inflation_radius = float(inflation_radius)
         self.cost_radius = max(float(cost_radius), self.inflation_radius)
@@ -97,6 +104,13 @@ class GridPlanner:
         self.max_expansions = int(max_expansions)
         self.window_margin = float(window_margin)
         self.goal_tolerance = float(goal_tolerance)
+        # Segundo intento con un margen mínimo (radio del dron + poco) cuando no
+        # hay camino con el normal: puertas y pasillos angostos. La misión cruza
+        # esos tramos más despacio y con la evasión ajustada (`PlanResult.narrow`).
+        self.narrow_inflation_radius = float(narrow_inflation_radius)
+        # Despeje (m, desde el centro del dron) por debajo del cual un camino
+        # cuenta como "paso angosto": el radio + margen de la evasión reactiva.
+        self.narrow_clearance = float(narrow_clearance)
 
     # ------------------------------------------------------------------
     def _window(self, snapshot, start, goal):
@@ -145,15 +159,40 @@ class GridPlanner:
         return out
 
     def plan(self, snapshot, start_ne, goal_ne):
+        result = self._plan(snapshot, start_ne, goal_ne, self.inflation_radius)
+        if result.ok and result.clearance < self.narrow_clearance:
+            # El camino normal existe pero pasa por un hueco más angosto que lo
+            # que pide la evasión reactiva: sin avisarle, el VFH ve el hueco
+            # tapado y el dron oscila frente a él (QA 2b, puerta de 1.5 m).
+            result.narrow = True
+        narrow = self.narrow_inflation_radius
+        if not (0.0 < narrow < self.inflation_radius):
+            return result
+        straight = math.hypot(goal_ne[0] - start_ne[0], goal_ne[1] - start_ne[1])
+        # Probar el paso angosto si no hay camino, o si el camino normal es un
+        # rodeo largo (una pared de 60 m con una puerta de 1.5 m en el medio):
+        # si no, el modo angosto se prende y se apaga entre replanificaciones.
+        detour = result.ok and _path_length(result.path) > 1.5 * straight + 3.0
+        if result.ok and not detour:
+            return result
+        squeezed = self._plan(snapshot, start_ne, goal_ne, narrow)
+        if squeezed.ok and (not result.ok
+                            or _path_length(squeezed.path) < 0.6 * _path_length(result.path)):
+            squeezed.narrow = True
+            squeezed.reason = 'ok (paso angosto)'
+            return squeezed
+        return result
+
+    def _plan(self, snapshot, start_ne, goal_ne, inflation):
         start_ne = (float(start_ne[0]), float(start_ne[1]))
         goal_ne = (float(goal_ne[0]), float(goal_ne[1]))
         occupied, unknown, on, oe, res = self._window(snapshot, start_ne, goal_ne)
         rows, cols = occupied.shape
 
-        infl_cells = int(math.ceil(self.inflation_radius / res))
+        infl_cells = int(math.ceil(inflation / res))
         dist = self._clearance(occupied, res)
-        blocked = dist < self.inflation_radius
-        proximity = np.clip((self.cost_radius - dist) / max(self.cost_radius - self.inflation_radius, 1e-3),
+        blocked = dist < inflation
+        proximity = np.clip((self.cost_radius - dist) / max(self.cost_radius - inflation, 1e-3),
                             0.0, 1.0) * self.proximity_weight
         proximity[~np.isfinite(dist)] = 0.0
         step_cost = 1.0 + proximity + np.where(unknown, self.unknown_penalty, 0.0)
@@ -209,6 +248,43 @@ class GridPlanner:
         result.path = path
         result.ok = True
         result.reason = 'ok'
+        # Despeje mínimo a lo largo del camino, contando sólo los PASOS: puntos
+        # con obstáculo a los dos lados (una puerta, un pasillo angosto). Un
+        # camino que bordea una sola pared no es un paso angosto; si se lo
+        # tratara así, la evasión bajaría sus márgenes junto a cualquier pared.
+        clear = math.inf
+        reach = int(math.ceil((self.narrow_clearance + 0.3) / res)) if self.narrow_clearance > 0 else 0
+        for idx, (a, b) in enumerate(zip(cells[:-1], cells[1:])):
+            steps = int(max(abs(b[0] - a[0]), abs(b[1] - a[1]))) * 2 + 1
+            rr = np.rint(np.linspace(a[0], b[0], steps)).astype(int)
+            cc = np.rint(np.linspace(a[1], b[1], steps)).astype(int)
+            if idx == 0:   # el dron puede arrancar ya cerca de algo
+                rr, cc = rr[steps // 3:], cc[steps // 3:]
+            if rr.size == 0 or reach == 0:
+                continue
+            seg = np.array([b[0] - a[0], b[1] - a[1]], dtype=float)
+            norm = float(np.hypot(*seg))
+            if norm < 1e-9:
+                continue
+            perp = np.array([-seg[1], seg[0]]) / norm
+            for r, c in zip(rr, cc):
+                if dist[r, c] >= self.narrow_clearance:
+                    continue
+                sides = []
+                for sign in (1.0, -1.0):
+                    hit = False
+                    for k in range(1, reach + 1):
+                        pr = int(round(r + sign * perp[0] * k))
+                        pc = int(round(c + sign * perp[1] * k))
+                        if not (0 <= pr < rows and 0 <= pc < cols):
+                            break
+                        if occupied[pr, pc]:
+                            hit = True
+                            break
+                    sides.append(hit)
+                if all(sides):
+                    clear = min(clear, float(dist[r, c]))
+        result.clearance = clear
         return result
 
     def _nearest_free(self, blocked, passable, origin, max_radius):

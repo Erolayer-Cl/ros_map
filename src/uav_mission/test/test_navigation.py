@@ -242,6 +242,54 @@ class PlannerTest(unittest.TestCase):
         self.assertAlmostEqual(point[1], 2.0, delta=0.05)
 
 
+def door_snapshot(width):
+    """Pared en n=10 de este a oeste con una puerta de `width` m centrada en e=0."""
+    res = 0.15
+    origin = -15.0
+    values = np.zeros((200, 200), dtype=np.int8)
+    row = int((10.0 - origin) / res)
+    east = origin + (np.arange(200) + 0.5) * res
+    values[row:row + 2, np.abs(east) > width / 2.0] = 100
+    return GridSnapshot(values=values, resolution=res, origin_n=origin, origin_e=origin)
+
+
+class NarrowPassageTest(unittest.TestCase):
+
+    def planner(self):
+        return GridPlanner(inflation_radius=0.65, narrow_inflation_radius=0.55,
+                           narrow_clearance=0.8)
+
+    def test_door_is_flagged_narrow(self):
+        result = self.planner().plan(door_snapshot(1.5), (5.0, 0.0), (15.0, 0.0))
+        self.assertTrue(result.ok, result.reason)
+        self.assertTrue(result.narrow)
+        self.assertLess(abs(max(abs(p[1]) for p in result.path)), 0.5)   # derecho por la puerta
+
+    def test_wide_door_is_not_narrow(self):
+        result = self.planner().plan(door_snapshot(3.0), (5.0, 0.0), (15.0, 0.0))
+        self.assertTrue(result.ok)
+        self.assertFalse(result.narrow)
+
+    def test_skirting_one_wall_is_not_narrow(self):
+        snap = u_trap_snapshot()
+        result = self.planner().plan(snap, (5.0, 0.0), (12.0, 0.0))
+        self.assertTrue(result.ok)
+        self.assertFalse(result.narrow)
+
+    def test_corridor_mode_goes_through_door(self):
+        """Puerta de 1.5 m a ~2.8 m: con el margen normal la evasión ve el hueco
+        tapado; en modo angosto (margen chico + prueba de corredor) va derecho."""
+        ranges = np.full(72, INF)
+        for deg in (15, 20, 25, 30, -15, -20, -25, -30):
+            ranges[(deg // 5) % 72] = 0.75 / math.sin(math.radians(abs(deg)))
+        normal = VfhAvoider(AvoidConfig(safety_margin=0.35))
+        self.assertTrue(normal.update(ranges, 0.0, 10.0, 0.0).deviated)
+        narrow = VfhAvoider(AvoidConfig(safety_margin=0.1, corridor_mode=True))
+        cmd = narrow.update(ranges, 0.0, 10.0, 0.0)
+        self.assertFalse(cmd.deviated)
+        self.assertAlmostEqual(cmd.direction, 0.0)
+
+
 class ExplorationTest(unittest.TestCase):
 
     def test_frontier_between_free_and_unknown(self):

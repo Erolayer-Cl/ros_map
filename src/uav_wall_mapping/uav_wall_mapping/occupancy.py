@@ -246,6 +246,35 @@ class OccupancyGrid2D:
             if stamp is not None:
                 self.last_hit.reshape(-1)[hit_flat] = float(stamp)
 
+    def mark_traversed(self, center_ne, radius):
+        """Marca como conocidas (neutras) las celdas DESCONOCIDAS a menos de
+        `radius` del punto: es espacio por el que el dron pasó, así que no hay
+        nada sólido. Las celdas ya observadas no se tocan (nunca borra un
+        obstáculo). Sin esto, con una cámara de 87° y alcance mínimo de 0.3 m,
+        lo que queda pegado al dron nunca se ve y la exploración vuelve una y
+        otra vez a esas "fronteras" junto a su propio camino (QA 9c). Es lo
+        que hacen voxblox (esfera de 1-1.5 m) y el entorno de CMU.
+        """
+        if radius <= 0.0:
+            return
+        center = np.asarray(center_ne, dtype=float).reshape(2)
+        self.ensure_contains(np.array([center - radius, center + radius]))
+        r = int(math.ceil(radius / self.resolution))
+        rows, cols = self.to_cells(center[None, :])
+        r0, c0 = int(rows[0]), int(cols[0])
+        rr0, rr1 = max(0, r0 - r), min(self.shape[0], r0 + r + 1)
+        cc0, cc1 = max(0, c0 - r), min(self.shape[1], c0 + r + 1)
+        if rr0 >= rr1 or cc0 >= cc1:
+            return
+        gr, gc = np.mgrid[rr0:rr1, cc0:cc1]
+        centers = self.cell_centers(gr.reshape(-1), gc.reshape(-1))
+        inside = (np.hypot(centers[:, 0] - center[0], centers[:, 1] - center[1]) <= radius
+                  ).reshape(gr.shape)
+        known = self.known[rr0:rr1, cc0:cc1]
+        target = inside & ~known
+        self.log_odds[rr0:rr1, cc0:cc1][target] = 0.0
+        known[target] = True
+
     def forget_transient(self, now, max_age, max_hits, center_ne=None, radius=None):
         """Olvida (vuelve a desconocido) celdas ocupadas que se vieron pocas
         veces (`hit_count` <= max_hits) y hace más de `max_age` s, a menos de
