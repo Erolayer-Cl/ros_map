@@ -24,8 +24,16 @@
       min_range: 0.3
       max_range: 6.0                  # más lejos, el error de la estéreo crece con d²
 
+    self_filter:
+      box: [-0.5, 0.5, -0.5, 0.5, -0.35, 0.4]   # cuerpo FRD: medir el dron real
+
     sectors:
-      range: 6.0
+      range: 6.0                      # también el tope de velocidad: hay que poder frenar en 6 m
       from_map: true                  # imprescindible: la cámara sólo ve adelante
+      sensor_timeout: 0.4
+      min_points: 2
+      # Una nube vacía de una cámara mirando a un espacio abierto es normal: los
+      # sectores fuera de lo que se ve quedan "no vistos" (seen_age) y la misión
+      # no se desvía hacia ellos ni avanza a ciegas (gira primero).
 
     output_dir: ~/ros_map_mapas

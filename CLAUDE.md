@@ -16,8 +16,8 @@ Comentarios, docstrings, logs y docs en español; identificadores en inglés.
 
 ```sh
 ./run_tests.sh rapido     # unitarias, segundos, sin ROS (python3 + numpy + pyyaml)
-./run_tests.sh            # + 5 escenarios de lazo cerrado
-TODOS=1 ./run_tests.sh    # los 9 escenarios (~3 min)
+./run_tests.sh            # + 6 escenarios de lazo cerrado
+TODOS=1 ./run_tests.sh    # los 14 escenarios (~3 min)
 PYTHONPATH=src/uav_wall_mapping:src/uav_mission:src/uav_sim python3 -m uav_sim.closed_loop --escenario 06_habitacion -v
 ```
 
@@ -54,38 +54,51 @@ Después de cambiar un `.msg`: `rm -rf build/uav_map_msgs install/uav_map_msgs`.
 - Debounce en todas las decisiones de evasión (lección de la referencia).
 - `cloud.mount_*` tiene que coincidir con el `settings.json` de AirSim o con el
   montaje real: un error de signo espeja el mapa.
+- Evasión en entornos reales (docs/evasion-entornos-reales.md):
+  - Cada nube se transforma con la pose de su `header.stamp` (`pose_buffer.py`)
+    y los sectores se recalculan contra la pose ACTUAL desde puntos guardados en
+    NED. No volver a "última pose" ni a distancias relativas guardadas.
+  - `ObstacleSectors.header.stamp` es la CAPTURA, no la publicación; la edad
+    entra en el frenado. QoS de `/obstacles/sectors` BEST_EFFORT/KEEP_LAST 1 en
+    los dos nodos (si uno queda RELIABLE no se conectan).
+  - El corredor del frenado (`free_travel`) tiene el mismo ancho que el
+    agrandado del VFH; con uno más ancho el dron se traba al bordear.
+  - `avoid.emergency_distance` < `robot_radius + safety_margin`: si no, bordear
+    dispara la huida. La emergencia se decide con `live_ranges` (no la memoria).
+  - La zanahoria se recorta SÓLO en la dirección de avance (`_limit_along_lead`)
+    y `_freeze()` sostiene donde empezó a frenar: recortar lo lateral o
+    re-anclar en el dron cada ciclo deja al control sin autoridad contra el
+    viento (choque en QA 6a).
+  - El error de seguimiento cuenta sólo el pasarse por delante (y la altura):
+    frenar por desvío lateral con viento lo empujaba a la pared.
+  - Nube vacía = sensor ciego sólo si el campo es >= 180°: una cámara mirando a
+    un espacio abierto está sana (si no, la misión queda en HOLD).
+  - La grilla 2D va del piso a 1 m sobre el dron y el piso sube d·tan(2°): sin
+    eso el techo tapa la grilla y el piso lejano con 1-2° de error de actitud se
+    vuelve pared.
+  - El A* mide la distancia en la grilla fina; en la gruesa las puertas < 2.4 m
+    no pasaban.
+  - Sectores no vistos van a PX4 como UINT16_MAX, nunca como libres.
 
 ## Trabajo en curso: evasión para entornos reales
 
 Pedido: buscar código de ejemplo de evasión que se use en vuelos reales, ver
-qué consideran, y mejorar este stack con agentes asíncronos (investigación,
-creación, análisis, QA).
+qué consideran, y mejorar este stack.
 
 Estado:
 - Base: commit `be2db04` en `claude/ros2-px4-wall-detection-mapping-taoqhe`.
   El **push a GitHub falla con 403** (falta la GitHub App de Claude en
-  `Erolayer-Cl/ros_map`); arreglarlo en https://claude.ai/connect-github y
-  reintentar `git push -u origin claude/ros2-px4-wall-detection-mapping-taoqhe`.
-- Ola 1 (en curso): investigación de planificadores reales (EGO-Planner,
-  Fast-Planner/FUEL, FASTER, PX4-Avoidance, CMU, voxblox/nvblox,
-  kr_autonomous_flight, aerostack2), investigación de autopilotos (PX4 v1.17
-  CollisionPrevention, ArduPilot AC_Avoid/BendyRuler/Dijkstra/AP_Proximity) y
-  lista de problemas del entorno real, análisis de brechas de este código, y QA
-  adversarial (postes/cables finos, puerta angosta, ruido, polvo, latencia,
-  inercia, viento, obstáculo dinámico, pérdida de sensor, cámara 87°).
-- Ola 2 (pendiente): creación en una copia aislada (worktree) con las mejoras
-  priorizadas + `docs/evasion-entornos-reales.md` con los ejemplos y lo que
-  consideran; luego QA final con el arnés de la ola 1; integrar, `TODOS=1
-  ./run_tests.sh`, commit y push.
-
-Reportes de la sesión (scratchpad, efímero: copiar lo útil a `docs/` antes de
-cerrar): `investigacion/01_codigo_planificadores.md`,
-`investigacion/02_autopiloto_y_entorno_real.md`, `analisis/03_brechas.md`,
-`qa/04_qa_inicial.md`, arnés en `qa/harness/run_all.py --repo <ruta>`.
-
-Candidatos de mejora ya identificados (confirmar con los reportes):
-distancia de frenado dependiente de la velocidad (v²/2a + v·t_latencia),
-transformar cada nube con la pose de su timestamp (buffer de poses), filtro de
-puntos espurios y de auto-impactos, olvido de obstáculos dinámicos en el mapa
-y en los sectores, banda vertical según la actitud, retroceso sólo hacia
-sectores vistos, altura mínima y geocerca.
+  `Erolayer-Cl/ros_map`); arreglarlo en https://claude.ai/connect-github.
+- Ola 1 (hecha): investigación, análisis de brechas y QA adversarial. Los
+  reportes están en `docs/investigacion/` (01 planificadores, 02 autopilotos y
+  entorno real, 03 brechas); el arnés de QA quedó en el scratchpad de la sesión
+  (`qa/harness/run_all.py --repo <ruta>`), no en el repo.
+- Ola 2 (hecha en la rama del worktree `worktree-agent-a8e8f2f339dc0c66f`):
+  frenado físico, tiempos (historial de poses + edad del dato), franja relativa
+  al dron, filtros de auto-impactos y ruido, sectores vistos/scaleToFOV,
+  failsafes, mapper sin bloqueo, simulación de entorno real (5 escenarios
+  nuevos), puertas de 2 m, y `docs/evasion-entornos-reales.md`.
+- Pendiente: integrar la rama, QA final, probar con ROS 2 real / Unreal / vuelo.
+  Lo no cubierto (vidrio, cables, deskew por punto → FAST-LIO2, evasión
+  vertical, batería, predicción de dinámicos, mapeo con cámara: livelock entre
+  fronteras en QA 9c) está en docs/evasion-entornos-reales.md §4.

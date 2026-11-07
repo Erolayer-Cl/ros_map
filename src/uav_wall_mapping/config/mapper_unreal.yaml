@@ -40,6 +40,11 @@
       band_below: 0.7         # m bajo el dron que cuentan como choque
       band_above: 0.7
       from_map: true          # sumar lo que ya está en el mapa (memoria)
+      sensor_timeout: 0.4     # s desde la captura de la nube
+      min_points: 2           # distancia del sector = la del 2.º punto (ruido suelto)
+
+    self_filter:
+      box: [-0.5, 0.5, -0.5, 0.5, -0.35, 0.4]   # caja del dron, cuerpo FRD (z+ abajo)
 
     walls:
       flat_max_rms: 0.08      # m de dispersión por cara para ser "plana"

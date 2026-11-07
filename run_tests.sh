@@ -1,7 +1,7 @@
 #!/bin/bash
 # Todas las pruebas, sin ROS ni Unreal (sólo python3 + numpy + pyyaml).
-#   ./run_tests.sh            # unitarias + 5 escenarios de lazo cerrado (~2 min)
-#   TODOS=1 ./run_tests.sh    # los 9 escenarios (~4 min)
+#   ./run_tests.sh            # unitarias + 6 escenarios de lazo cerrado (~2 min)
+#   TODOS=1 ./run_tests.sh    # los 14 escenarios (~3 min)
 #   ./run_tests.sh rapido     # sólo unitarias (segundos)
 set -e
 cd "$(dirname "${BASH_SOURCE[0]}")"

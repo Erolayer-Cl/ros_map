@@ -9,6 +9,15 @@
       local_position_topic: /fmu/out/vehicle_local_position_v1
       attitude_topic: /fmu/out/vehicle_attitude
 
+    # Cada nube con la pose de su captura (docs/evasion-entornos-reales.md §2.2).
+    # Requiere UXRCE_DDS_SYNCT=1 en PX4 y el reloj del Mid-360 en la base de la
+    # Jetson (PTP con ptp4l, o el driver sellando con la hora del host); si no,
+    # mapper_node avisa y usa la hora de llegada.
+    time:
+      use_px4_timestamps: true
+      max_clock_skew: 1.0
+      pose_history: 2.0
+
     cloud:
       topics: ['/livox/lidar']
       axes: ['flu']
@@ -30,6 +39,18 @@
       sensor_fov_deg: 360.0
       min_range: 0.4          # el Mid-360 ve hasta 0.1 m: descartar hélices/patas
       max_range: 40.0
+      floor_slope_deg: 2.0    # el piso sube d·tan(2°): errores de actitud con el piso lejano
+      forget_after: 0.0       # 10.0 en espacios con gente/vehículos (olvido de lo efímero)
+
+    # Caja del dron (cuerpo FRD, z+ abajo): MEDIR el dron real (hélices +
+    # 5 cm, patas, mástil del GPS). Si mapper_node loguea muchos puntos
+    # descartados en vuelo estable, la caja o el montaje están mal.
+    self_filter:
+      box: [-0.5, 0.5, -0.5, 0.5, -0.35, 0.4]
+    outliers:                 # polvo, lluvia, insectos: retornos sueltos
+      voxel: 0.25
+      min_points: 2
+      max_range: 8.0
 
     sectors:
       rate: 10.0
@@ -37,12 +58,17 @@
       band_below: 0.7
       band_above: 0.7
       from_map: true
+      sensor_timeout: 0.4     # s desde la captura (PX4 CP descarta a los 0.5 s)
+      min_points: 2           # k-ésimo punto más cercano por sector
+      min_cloud_points: 20    # nube con menos puntos útiles = sensor ciego
 
     publish:
-      map_rate: 1.0
+      map_rate: 2.0           # el A* replanifica cada 1 s: con 1 Hz el camino tenía 2 s
       walls_period: 3.0
       cloud_period: 5.0
     output_dir: ~/ros_map_mapas
 
+    # Red de seguridad SÓLO en modo Position (en Offboard PX4 no la usa): los
+    # sectores no vistos van como UINT16_MAX y el timestamp es el de captura.
     px4_obstacle_distance:
       enabled: true           # ver docs/jetson-px4-1.17.md (CP_DIST, CP_GO_NO_DATA)

@@ -45,6 +45,8 @@ ZED X Mini) con menos alcance y campo visual. Hay un YAML listo para cada caso.
 | [docs/casos-de-prueba-unreal.md](docs/casos-de-prueba-unreal.md) | Los 9 casos de prueba en Unreal paso a paso, y cómo poner paredes a mano. |
 | [docs/arquitectura.md](docs/arquitectura.md) | Nodos, tópicos, marcos, algoritmos (mapa, paredes, VFH+, A*, fronteras). |
 | [docs/jetson-px4-1.17.md](docs/jetson-px4-1.17.md) | Dron real: Jetson, uXRCE-DDS por TELEM2, parámetros de PX4 v1.17, Mid-360, primer vuelo. |
+| [docs/evasion-entornos-reales.md](docs/evasion-entornos-reales.md) | Qué hacen PX4, ArduPilot y los planificadores que vuelan de verdad; qué adoptamos (frenado físico, tiempos, filtros, failsafes) y qué no cubrimos. |
+| [docs/investigacion/](docs/investigacion/) | Reportes completos: código de planificadores reales, autopilotos y entorno real, brechas de este stack. |
 
 ---
 
@@ -62,7 +64,7 @@ PYTHONPATH=src/uav_wall_mapping:src/uav_mission:src/uav_sim \
 
 La última corre la misión de mapeo completa (despegue, exploración, esquive,
 guardado, regreso) contra un lidar simulado y deja el plano en `/tmp/mapas/`.
-`--todos` corre los 9 escenarios.
+`--todos` corre los 14 escenarios.
 
 ## Instalación (PC de simulación o Jetson)
 
@@ -114,6 +116,34 @@ ESCENARIO=06_habitacion ./launch_sim_unreal.sh           # Unreal ya en Play
 ros2 run uav_sim spawn_scenario --escenario 06_habitacion --limpiar   # pone las paredes
 ros2 service call /mission/map std_srvs/srv/Trigger
 ```
+
+## Evasión en entornos reales
+
+La simulación sin latencia ni ruido escondía fallas que en un vuelo real
+chocan (ver [docs/evasion-entornos-reales.md](docs/evasion-entornos-reales.md),
+con el código de PX4, ArduPilot, EGO-Planner, PX4-Avoidance, KR y otros de
+donde sale cada idea):
+
+- **Frenado físico**: velocidad máxima `v = −a·t + √((a·t)² + 2·a·d)` con `d`
+  libres en el corredor de avance y `t` = latencia + edad del dato
+  (`avoid.max_decel` 1 m/s², `avoid.latency` 0.4 s, como `CP_DELAY` de PX4).
+- **Tiempos**: cada nube con la pose de su captura (historial de poses con
+  slerp), sectores recalculados contra la pose actual, edad del dato en el
+  frenado, timeouts de 0.4-0.5 s. Requiere `UXRCE_DDS_SYNCT=1`.
+- **Techo**: la grilla 2D llega a 1 m sobre el dron, no a 8 m sobre el despegue.
+- **Filtros**: caja del propio dron (`self_filter.box`), puntos aislados
+  (polvo, insectos), 2.º punto por sector; la huida la dispara sólo el sensor
+  en vivo y va únicamente hacia sectores vistos (con cámara, gira antes de
+  avanzar fuera de la vista).
+- **Failsafes**: sin pose → frenar y aterrizar a los 2 s; sin sensor → frenar y
+  aterrizar a los 10 s; RETURN imposible → aterrizar; geocerca blanda; altura
+  mínima/máxima.
+- **Ojo:** la Collision Prevention de PX4 **no actúa en Offboard**.
+- Escenarios de entorno real en `uav_sim` (latencia, cabeceo, polvo,
+  auto-impactos, viento, obstáculo súbito, techo, puerta de 2 m, postes finos).
+
+Lo que no cubre: vidrio, cables finos, deskew por punto (usar FAST-LIO2),
+evasión vertical.
 
 ## Dron real
 
@@ -193,9 +223,11 @@ launch_sim_unreal.sh, launch_fake_sim.sh, stop_sim.sh, setup_workspace.sh, run_t
 ## Estado de la verificación
 
 - Pruebas unitarias (geometría, nubes, grilla, sectores, paredes, VFH+, A*,
-  exploración, máquina de estados) y los **9 escenarios de lazo cerrado**: pasan
-  (`./run_tests.sh`, `TODOS=1 ./run_tests.sh`). En todos, la distancia mínima a
-  las paredes quedó por encima de 0.9 m.
+  frenado, historial de poses, filtros, failsafes, exploración, máquina de
+  estados) y los **14 escenarios de lazo cerrado** (5 de ellos con condiciones
+  de entorno real): pasan (`./run_tests.sh`, `TODOS=1 ./run_tests.sh`). Choque =
+  centro del dron a menos de su radio (0.45 m); la distancia mínima a las
+  paredes quedó por encima de 0.7 m.
 - Los tres nodos ROS se ejercitaron juntos sobre un ROS simulado en memoria
   (misión de mapeo y de waypoints completas, mapa guardado vía `/map/save`).
 - **Pendiente de probar en un entorno ROS 2 Humble real, en Unreal y en vuelo**:

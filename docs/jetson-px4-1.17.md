@@ -124,9 +124,17 @@ contrario o girada, el montaje (`cloud.mount_rpy_deg`, `cloud.axes`) está mal.
 
 Con `px4_obstacle_distance.enabled: true` (ya activo en `mapper_mid360.yaml`),
 el mapper publica los 72 sectores en `/fmu/in/obstacle_distance` (marco
-`MAV_FRAME_LOCAL_NED`, centímetros, `max_distance + 1` = libre). PX4 sólo usa
-esto en **modo Position** (no en Offboard): protege cuando el piloto toma el
-control con la radio. Parámetros (PX4 v1.17):
+`MAV_FRAME_LOCAL_NED`, centímetros, `max_distance + 1` = libre, `UINT16_MAX` =
+sector que ningún sensor miró en los últimos `sectors.sensor_timeout` s, y
+`timestamp` = instante de **captura** de la nube, no de publicación).
+
+**La Collision Prevention de PX4 NO actúa en Offboard.** En v1.17 la única
+llamada a `modifySetpoint()` está en `StickAccelerationXY` (modos Position y
+Position Slow): el `trajectory_setpoint` de `mission_node` pasa sin tocar. En
+vuelo autónomo toda la evasión es de este stack
+([evasion-entornos-reales.md](evasion-entornos-reales.md)); esto sólo protege
+cuando el piloto toma el control con la radio (o el failsafe de offboard pasa
+a Position con `COM_OBL_RC_ACT = 0`). Parámetros (PX4 v1.17):
 
 | Parámetro | Valor sugerido | Nota |
 |---|---|---|
@@ -141,6 +149,25 @@ publicar más de 0.5 s, PX4 avisa *"No range data received, no movement
 allowed"* y **no deja mover el dron en horizontal en modo Position**. El piloto
 tiene que pasar a Altitude o Stabilized. Practicarlo en simulación antes.
 
+### Tiempos: `UXRCE_DDS_SYNCT` y timestamps de captura
+
+- `UXRCE_DDS_SYNCT=1` (el defecto) hace que el cliente uXRCE-DDS traduzca los
+  `timestamp` entre el reloj de PX4 y el del agente (la Jetson). Sin eso los
+  `timestamp_sample` de `/fmu/out/*` no están en la base del reloj de ROS y
+  `mapper_node` avisa *"stamp ... desfasado ... se usa la hora de llegada"*: el
+  mapa se corre al acelerar o girar (03_brechas.md, C3).
+- PX4 interpreta `timestamp = 0` como "recién llegado" y **oculta la latencia**
+  (`msg.h.em`: `if (timestamp == 0) timestamp = hrt_absolute_time()`). Por eso
+  `/fmu/in/obstacle_distance` lleva el instante de captura: la CP descuenta
+  `v·edad` del espacio libre.
+- El Mid-360 sella las nubes con su propio reloj salvo que esté sincronizado
+  (PTP: `ptp4l` en la Jetson, o el driver configurado para usar la hora del
+  host). Verificar: `ros2 topic echo /livox/lidar --field header.stamp` contra
+  `date +%s.%N`; la diferencia tiene que ser < 0.2 s.
+- La misión usa la edad de `/obstacles/sectors` (`header.stamp` = captura) en
+  el frenado: medirla en vuelo (`ros2 topic delay /obstacles/sectors`) y, si es
+  mayor de ~0.3 s, subir `avoid.latency` o bajar `cruise_speed`.
+
 ## 6. Parámetros de PX4 para el vuelo offboard
 
 | Parámetro | Valor | Nota |
@@ -149,7 +176,9 @@ tiene que pasar a Altitude o Stabilized. Practicarlo en simulación antes.
 | `COM_OBL_RC_ACT` | `5` (Hold) o `0` (Position) | Qué hace PX4 si se pierde offboard con radio presente. |
 | `COM_RCL_EXCEPT` | `4` sólo en simulación | En el dron real dejar `0`: perder la radio tiene que disparar el failsafe también en offboard. |
 | `NAV_RCL_ACT`, `NAV_DLL_ACT` | los de siempre (no 0 en real) | En `settings.json` de simulación se ponen en 0. |
-| `MPC_XY_VEL_MAX` | ≥ `cruise_speed` | El nodo manda la velocidad con la zanahoria + feedforward. |
+| `MPC_XY_VEL_MAX` | `cruise_speed + 0.5` | El nodo manda la velocidad con la zanahoria + feedforward; esto es el techo físico si la zanahoria se adelanta. |
+| `MPC_TILTMAX_AIR` | `25`-`30` | Menos cabeceo al frenar: los sensores fijos al cuerpo miran menos al piso. |
+| `GF_ACTION`, `GF_MAX_HOR_DIST`, `GF_MAX_VER_DIST` | `2` (Hold), área + 10 m | Geocerca de PX4, además de la blanda de `mission_node` (`safety.*`). |
 
 Si el piloto saca el dron de OFFBOARD (cambia de modo en la radio o en QGC),
 `mission_node` pasa a `PREEMPTED` y **deja de mandar setpoints**: no pelea por

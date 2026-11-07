@@ -49,13 +49,23 @@ Cosys-AirSim), `frd` (PX4/AirSim crudo), `optical` (cámaras de profundidad).
 
 ## 3. Mapeo
 
+**Antes de mapear** (`WallMapper.integrate_sensor`, igual en el nodo y en
+`closed_loop`): puntos aislados fuera (ruido: < 2 puntos en la vecindad 3x3x3
+de vóxeles de 0.25 m), submuestreo, caja del propio dron en el marco del
+cuerpo (`self_filter.box`) y al mundo con la pose **de la captura**
+(`pose_buffer.py`: historial de 2 s, lineal + slerp al `header.stamp`). Una
+nube (casi) vacía de un sensor de 360° es un sensor ciego: no talla ni cuenta
+como dato fresco.
+
 **Grilla 2D (log-odds).** Cada nube aporta: impactos (`+0.85`) para los puntos
-dentro de la franja de alturas `map.min_height..map.max_height`, y espacio
-libre (`−0.4`) en las celdas recorridas por los rayos. Se proyecta toda la
-franja (no sólo la altura de vuelo): así una pared inclinada o con salientes
-deja su huella completa, y el planificador nunca acerca el dron a la parte que
-sobresale. Detalles que importan (cada uno salió de una falla real en la
-simulación):
+dentro de la franja `map.min_height` (piso) .. `altura del dron +
+map.max_height_above_drone` (1 m), y espacio libre (`−0.4`) en las celdas
+recorridas por los rayos. La franja llega un poco por encima del dron y no
+más: así una pared inclinada o con salientes deja su huella hasta donde el dron
+la puede tocar, y el techo de una habitación no tapa la grilla. El piso sube
+con la distancia (`map.floor_slope_deg`, 2°) para que un error de actitud no
+convierta el piso lejano en pared. Detalles que importan (cada uno salió de una
+falla real en la simulación):
 
 - **Rayos sin impacto.** Un lidar no devuelve puntos donde no chocó; para que el
   espacio abierto cuente como explorado se tallan como libres hasta
@@ -72,13 +82,20 @@ simulación):
   la que se los vio. Sirve para separar las dos caras de una pared (abajo).
 
 **Mapa 3D.** Vóxeles de 0.2 m que guardan cantidad de impactos, posición media
-(sin ruido de cuantización) y lado de observación. No se borra espacio libre en
-3D: es para escenas estáticas.
+(sin ruido de cuantización), lado de observación y último impacto. No se borra
+espacio libre en 3D; con `map.forget_after` > 0 se olvida lo efímero (vóxeles y
+celdas vistos en pocas nubes que no se volvieron a ver).
 
-**Sectores.** Para la evasión: distancia horizontal mínima por sector de 5°
-con los puntos en la franja `altura del dron ± 0.7 m`, combinada con las
-celdas ocupadas del mapa cercanas (memoria: una pared que salió del campo de
-una cámara sigue existiendo). Si el sensor deja de publicar, no se publican
+**Sectores.** Para la evasión: por sector de 5°, la distancia horizontal del
+2.º punto más cercano (`sectors.min_points`: un retorno suelto no acerca la
+pared) en la franja `altura del dron ± 0.7 m`, combinada con las celdas
+ocupadas del mapa cercanas (memoria: una pared que salió del campo de una
+cámara sigue existiendo). De cada fuente se guardan los **puntos en NED** y los
+sectores se recalculan contra la pose actual en cada publicación.
+`ObstacleSectors` lleva además `live_ranges` (sólo sensores en vivo: decide la
+emergencia), `seen_age` (cuánto hace que un sensor miró cada sector) y en
+`header.stamp` el instante de captura del dato más nuevo (su edad entra en el
+frenado). Si no hay fuente fresca (0.4 s desde la captura), no se publican
 sectores y la misión frena.
 
 ## 4. Paredes: planas, irregulares, obstáculos
@@ -109,7 +126,7 @@ sectores y la misión frena.
    lo compacto (< 3 m) que no es una sola plana es **obstáculo**.
 7. Alturas e inclinación con el mapa 3D; ids estables entre extracciones.
 
-Validado con formas sintéticas (`test_walls.py`) y en lazo cerrado con los 9
+Validado con formas sintéticas (`test_walls.py`) y en lazo cerrado con los 14
 escenarios (`test_closed_loop.py`).
 
 ## 5. Navegación
@@ -122,17 +139,25 @@ arrastraría hacia la pared). Rampa de velocidad al arrancar (lección de la
 referencia: un escalón de velocidad cabecea el dron y los sensores ven el piso).
 
 **Planificador global A\*** sobre el mapa, a 0.3 m, en una ventana alrededor de
-inicio y objetivo, con obstáculos inflados 0.9 m y costo extra hasta 2 m (va
-por el medio de los pasillos). Lo desconocido se puede cruzar con un costo
+inicio y objetivo, con obstáculos inflados 0.65 m (distancia medida en la
+grilla fina) y costo extra hasta 2 m (va por el medio de los pasillos; pasa
+puertas de ~2 m). Lo desconocido se puede cruzar con un costo
 extra (exploración optimista). Se replanifica cada segundo en otro hilo. Es lo
 que resuelve la trampa en U.
 
 **Evasión reactiva VFH+** sobre los 72 sectores: cada obstáculo se agranda
-`asin((radio + margen) / d)` (uno cercano tapa más sectores que uno lejano), se
-elige el sector libre más cercano al rumbo deseado (con inercia, para no
-alternar izquierda/derecha), y la velocidad baja con la distancia libre al
-frente. Si algo queda a menos de 0.9 m, se aleja. Debounce de 0.2 s en cada
-decisión (lección de la referencia: el simulador puede dar lecturas espurias).
+`asin((radio + margen) / d)` (uno cercano tapa más sectores que uno lejano) y
+se elige el sector libre **y visto hace poco** más cercano al rumbo deseado
+(con inercia, para no alternar izquierda/derecha). El alcance con el que un
+obstáculo tapa crece con la distancia de frenado, y la velocidad es la que
+permite frenar en lo libre del corredor de avance:
+`v_max = −a·t + √((a·t)² + 2·a·d)`, con `t` = latencia + edad del dato
+(ver [evasion-entornos-reales.md](evasion-entornos-reales.md)). Con un sensor
+de campo limitado se escala por la fracción vista del avance (gira antes de
+avanzar fuera de la vista). Si el sensor en vivo ve algo a menos de 0.7 m, se
+aleja a 0.75 m/s hacia un sector visto y libre, o frena si no hay ninguno.
+Debounce de 0.2 s en cada decisión (lección de la referencia: el simulador
+puede dar lecturas espurias).
 
 **Fallas.** Sin progreso en `nav.stuck_timeout` s, A* sin camino 3 veces, o
 rodeado más de `avoid.blocked_timeout` s → el objetivo se abandona: en el
@@ -162,15 +187,25 @@ IDLE → ARMING → TAKEOFF → SCAN (360°) → NAVIGATE/AVOID a la frontera m�
 - Sólo `mission_node` manda a PX4; si el piloto sale de OFFBOARD, pasa a
   `PREEMPTED` y deja de publicar.
 - El lazo de control nunca deja escapar una excepción (pasa a HOLD y sigue
-  publicando); el A* corre en otro hilo.
-- Sin datos de obstáculos: no despega (`avoid.require_sensors`), y en vuelo
-  frena (`avoid.hold_on_sensor_loss`).
+  publicando); el A* corre en otro hilo. En `mapper_node`, extraer paredes y
+  guardar el mapa trabajan sobre una copia, fuera del lock de los sectores.
+- Sin datos de obstáculos: no despega (`avoid.require_sensors`), en vuelo
+  frena (`avoid.hold_on_sensor_loss`) y a los 10 s aterriza.
+- Sin posición válida de PX4: referencia fija y, a los 2 s, LAND. RETURN
+  imposible: LAND en el lugar. Dron que se pasa > 0.75 m de la referencia:
+  frena. Geocerca blanda (área + 3 m) y altura 0.5-20 m.
 - Ctrl-C con el dron armado manda LAND.
-- Collision Prevention de PX4 como red para el piloto (ver `jetson-px4-1.17.md`).
+- Collision Prevention de PX4 como red para el piloto, **sólo en modo
+  Position** (ver `jetson-px4-1.17.md`).
 
 ## 8. Lo que no hace (todavía)
 
-- Mapa 3D sin espacio libre: objetos que se mueven quedan en el mapa.
+Ver también [evasion-entornos-reales.md](evasion-entornos-reales.md) §4.
+
+- Mapa 3D sin espacio libre: objetos que se mueven quedan en el mapa (salvo lo
+  efímero con `map.forget_after`).
+- Sin deskew por punto (se usa la pose del `header.stamp`); sin evasión
+  vertical al cambiar de altura, despegar o aterrizar.
 - Una sola altura de vuelo por misión de mapeo (el lidar 3D cubre el resto).
 - Paredes de vidrio: invisibles para el lidar (también en la realidad).
 - Depende de la posición de PX4: con GPS malo o en interiores sin flujo óptico
