@@ -18,7 +18,7 @@ from uav_sim.scenario import list_scenarios, load_scenario  # noqa: E402
 # Todos los escenarios tardan unos minutos; por defecto se corren los más
 # representativos. ROS_MAP_TODOS=1 corre todos.
 QUICK = ['01_pared_plana', '02_pared_irregular', '05_trampa_U', '06_habitacion',
-         '07_pared_inclinada']
+         '07_pared_inclinada', '14_entorno_real']
 
 
 class ClosedLoopTest(unittest.TestCase):
@@ -26,6 +26,8 @@ class ClosedLoopTest(unittest.TestCase):
     def check(self, name):
         scenario = load_scenario(name)
         mission = scenario.mission.get('tipo', 'mapeo')
+        # Choque = el centro del dron a menos de su radio real (avoid.robot_radius,
+        # con hélices) de una superficie; antes era 0.3 m, menos que el radio.
         result = run(scenario, mission, max_time=400.0)
         exp = scenario.expected
         msg = f'{name}: {result.final_state}, {result.walls_flat} planas, ' \
@@ -39,6 +41,11 @@ class ClosedLoopTest(unittest.TestCase):
             self.assertLessEqual(result.walls_irregular, exp['paredes_irregulares_max'], msg)
         if 'cobertura_min' in exp:
             self.assertGreaterEqual(result.coverage, exp['cobertura_min'], msg)
+        if 'waypoints_alcanzados_min' in exp:
+            self.assertGreaterEqual(result.core._wp_index, exp['waypoints_alcanzados_min'],
+                                    f'{msg}: waypoint abandonado')
+        if 'despeje_min' in exp:
+            self.assertGreaterEqual(result.min_clearance, exp['despeje_min'], msg)
         if 'inclinacion_max_min_deg' in exp:
             tilts = [w.tilt_deg for w in result.mapper.walls if w.tilt_deg == w.tilt_deg]
             self.assertTrue(tilts and max(tilts) >= exp['inclinacion_max_min_deg'], msg)

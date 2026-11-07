@@ -52,6 +52,27 @@ Tipos de objeto:
   desde_deg: -40         # rumbo NED de los extremos del arco
   hasta_deg: 40
 ```
+
+Un techo es una `caja` delgada con `base` = altura del techo.
+
+Bloque opcional `simulacion:` (sólo `closed_loop`/`fake_px4_world`; Unreal
+no lo usa): condiciones de entorno real para probar la evasión.
+
+```yaml
+simulacion:
+  latencia_nube: 0.15        # s entre la captura y la entrega de la nube
+  cabeceo: true              # actitud por la aceleración (el lidar ve el piso al frenar)
+  ruido: 0.03                # desvío del rango (m)
+  polvo: {puntos: 3, distancia: [0.6, 5.0]}   # retornos sueltos por nube
+  auto_impactos: [[0.32, 0.32, 0.05], ...]    # puntos del propio dron (FRD, m)
+  viento: {velocidad: [0.0, 1.0], rafagas: 0.8, periodo: 6.0}   # deriva (m/s)
+  lidar: {mount_rpy_deg: [0, -20, 0]}        # campos de LidarModel
+  mapper: {min_range: 0.4}                   # campos de MapperConfig
+  dinamicos:                                 # cajas que aparecen o se mueven
+    - tamano: [0.6, 4.0, 5.0]
+      aparece: {cuando_norte_mayor: 4.0}     # o {t: 12.0} (s desde el arranque)
+      trayectoria: [[0, 10.0, 0.0], [5, 10.0, 3.0]]   # [t relativo, norte, este]
+```
 """
 
 import math
@@ -105,6 +126,7 @@ class Scenario:
     mission: dict
     expected: dict
     ground: bool = True
+    simulation: dict = None    # bloque `simulacion:` (condiciones de entorno real)
 
 
 def _box_from_wall(name, start, end, height, thickness, base=0.0, tilt_deg=0.0, kind='pared'):
@@ -268,7 +290,8 @@ def load_scenario(name_or_path):
     return Scenario(name=data.get('nombre', os.path.splitext(os.path.basename(path))[0]),
                     description=data.get('descripcion', ''), boxes=boxes, cylinders=cylinders,
                     mission=data.get('mision', {}) or {}, expected=data.get('esperado', {}) or {},
-                    ground=bool(data.get('piso', True)))
+                    ground=bool(data.get('piso', True)),
+                    simulation=data.get('simulacion', {}) or {})
 
 
 def mission_overrides(scenario, mission):

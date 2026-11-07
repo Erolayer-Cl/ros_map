@@ -64,16 +64,47 @@ def mission_params(scenario, mission, overrides=None):
     return params
 
 
+def _self_hits_sensor(lidar, points_frd):
+    """Puntos del propio dron (cuerpo FRD) expresados como los devolvería el
+    lidar (marco del sensor, ejes FLU)."""
+    body = np.asarray(points_frd, dtype=float).reshape(-1, 3) - np.asarray(lidar.mount_frd)
+    sensor_frd = body @ lidar.mount_rotation()          # = R_montaje^T · p
+    return sensor_frd * np.array([1.0, -1.0, -1.0])
+
+
 def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, overrides=None,
-        out_dir=None, collision_radius=0.3, seed=0, verbose=False):
+        out_dir=None, collision_radius=None, seed=0, verbose=False):
+    """Simula la misión. `collision_radius`: distancia (centro del dron a la
+    superficie) que cuenta como choque; por defecto `avoid.robot_radius`.
+
+    El bloque `simulacion:` del escenario agrega condiciones de entorno real
+    (latencia, cabeceo, ruido, polvo, auto-impactos, viento, obstáculos
+    dinámicos; ver scenario.py)."""
     if isinstance(scenario, str):
         scenario = load_scenario(scenario)
     params = mission_params(scenario, mission, overrides)
+    if collision_radius is None:
+        collision_radius = float(params['avoid.robot_radius'])
+    sim = dict(getattr(scenario, 'simulation', None) or {})
     world = World(scenario)
-    lidar = lidar or LidarModel()
+    if lidar is None:
+        kwargs = dict(sim.get('lidar', {}) or {})
+        if 'ruido' in sim:
+            kwargs['noise_std'] = float(sim['ruido'])
+        if 'latencia_nube' in sim:
+            kwargs['cloud_latency'] = float(sim['latencia_nube'])
+        for key in ('mount_frd', 'mount_rpy_deg'):
+            if key in kwargs:
+                kwargs[key] = tuple(float(v) for v in kwargs[key])
+        lidar = LidarModel(**kwargs)
     rng = np.random.default_rng(seed)
     mount = SensorMount(position_frd=lidar.mount_frd, rpy_deg=lidar.mount_rpy_deg, axes='flu')
-    mapper = WallMapper(MapperConfig(sensor_fov_deg=float(lidar.horizontal_fov_deg)))
+    mapper_kwargs = dict(sensor_fov_deg=float(lidar.horizontal_fov_deg))
+    mapper_kwargs.update(sim.get('mapper', {}) or {})
+    mapper = WallMapper(MapperConfig(**mapper_kwargs))
+    dust = sim.get('polvo') or None
+    self_hits = (_self_hits_sensor(lidar, sim['auto_impactos'])
+                 if sim.get('auto_impactos') else None)
     # Como mapper_node: historial de poses y cada nube transformada con la pose
     # de su captura. `cloud_latency` demora la entrega de la nube; un modelo de
     # lidar que ya devuelve la nube demorada desde `scan()` declara ese retardo
@@ -89,7 +120,11 @@ def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, override
 
     core = MissionCore(param=lambda name: params[name], log=log)
     planner = core.make_planner()
-    vehicle = SimVehicle(position=(0.0, 0.0, 0.0), yaw=float(scenario.mission.get('yaw_inicial', 0.0)))
+    wind = sim.get('viento') or {}
+    vehicle = SimVehicle(position=(0.0, 0.0, 0.0), yaw=float(scenario.mission.get('yaw_inicial', 0.0)),
+                         tilt_from_accel=bool(sim.get('cabeceo', False)),
+                         wind=wind.get('velocidad'), gusts=float(wind.get('rafagas', 0.0)),
+                         gust_period=float(wind.get('periodo', 6.0)))
 
     t = 0.0
     next_scan = next_map = next_walls = 0.0
@@ -111,9 +146,22 @@ def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, override
         poses.add_attitude(t, vehicle.q)
 
         # --- sensores + mapper ---
+        if hasattr(world, 'set_time'):
+            world.set_time(t, vehicle.position if vehicle.armed else None)
         if t >= next_scan:
             next_scan += 0.1
             pts_sensor = lidar.scan(world, vehicle.position, vehicle.q, rng)
+            extra = []
+            if dust:
+                n = int(dust.get('puntos', 3))
+                lo, hi = dust.get('distancia', [0.6, 5.0])
+                v = rng.normal(size=(n, 3))
+                v /= np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)
+                extra.append(v * rng.uniform(lo, hi, size=(n, 1)))
+            if self_hits is not None and vehicle.armed:
+                extra.append(self_hits + rng.normal(0.0, 0.01, self_hits.shape))
+            if extra:
+                pts_sensor = np.vstack([pts_sensor] + extra)
             captured = t - float(getattr(lidar, 'latency', 0.0) or 0.0)
             in_flight.append((captured + float(getattr(lidar, 'cloud_latency', 0.0)),
                               captured, pts_sensor))
@@ -234,7 +282,8 @@ def main(argv=None):
                         help=f'nombre o ruta .yaml. Disponibles: {", ".join(list_scenarios())}')
     parser.add_argument('--mision', choices=('mapeo', 'waypoints'), default=None,
                         help='por defecto, la que indique el escenario')
-    parser.add_argument('--salida', default=None, help='carpeta donde guardar el mapa')
+    parser.add_argument('--salida', default=None,
+                        help='carpeta donde guardar el mapa (sin esto no se guarda nada)')
     parser.add_argument('--tiempo', type=float, default=600.0, help='tiempo simulado máximo (s)')
     parser.add_argument('--todos', action='store_true', help='correr todos los escenarios')
     parser.add_argument('-v', '--verbose', action='store_true')
@@ -245,8 +294,8 @@ def main(argv=None):
     for name in names:
         scenario = load_scenario(name)
         mission = args.mision or scenario.mission.get('tipo', 'mapeo')
-        out = args.salida or os.path.join(os.getcwd(), 'mapas_offline')
-        result = run(scenario, mission, max_time=args.tiempo, out_dir=out, verbose=args.verbose)
+        result = run(scenario, mission, max_time=args.tiempo, out_dir=args.salida,
+                     verbose=args.verbose)
         print(summarize(result))
         print()
         failed |= result.collided or result.final_state != 'DONE'

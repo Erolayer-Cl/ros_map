@@ -111,6 +111,7 @@ class MapperNode(Node):
             min_height=p('map.min_height').value,
             max_height=p('map.max_height').value,
             max_height_above_drone=p('map.max_height_above_drone').value,
+            floor_slope_deg=p('map.floor_slope_deg').value,
             no_hit_free_range=p('map.no_hit_free_range').value,
             free_ray_bins=p('map.free_ray_bins').value,
             sensor_fov_deg=p('map.sensor_fov_deg').value,
@@ -223,6 +224,7 @@ class MapperNode(Node):
         d('map.max_size', 400.0)
         d('map.min_height', 0.3)
         d('map.max_height', 8.0)
+        d('map.floor_slope_deg', 2.0)          # el piso sube d·tan(esto) (errores de actitud lejos)
         d('map.max_height_above_drone', 1.0)   # tope de la grilla 2D relativo al dron (techos)
         d('map.no_hit_free_range', 6.0)
         d('map.free_ray_bins', 360)

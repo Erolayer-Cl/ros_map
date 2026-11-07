@@ -41,6 +41,42 @@ def rot_from_quat(q):
     ])
 
 
+class DynamicBox:
+    """Caja que aparece y/o se mueve por una poligonal `[[t, n, e], ...]`.
+
+    `aparece`: `{t: s}` (desde el arranque de la simulación) o
+    `{cuando_norte_mayor: m}` (cuando el dron pasa ese norte: un obstáculo
+    "súbito" que aparece justo delante). Antes de aparecer no existe; después
+    del último punto queda quieta ahí.
+    """
+
+    def __init__(self, spec):
+        self.size = np.asarray(spec.get('tamano', [1.0, 1.0, 4.0]), dtype=float)
+        self.base = float(spec.get('base', 0.0))
+        self.path = np.asarray(spec['trayectoria'], dtype=float).reshape(-1, 3)
+        self.appear = dict(spec.get('aparece', {'t': 0.0}))
+        self.t0 = float(self.appear['t']) if 't' in self.appear else None
+
+    def update_trigger(self, t, position):
+        if self.t0 is None and position is not None and \
+                position[0] > float(self.appear.get('cuando_norte_mayor', math.inf)):
+            self.t0 = t
+
+    def primitive(self, t):
+        if self.t0 is None or t < self.t0:
+            return None
+        tr = t - self.t0
+        p = self.path
+        ne = p[-1, 1:]
+        for i in range(len(p) - 1):
+            if tr <= p[i + 1, 0]:
+                a = (tr - p[i, 0]) / max(p[i + 1, 0] - p[i, 0], 1e-9)
+                ne = p[i, 1:] + max(0.0, a) * (p[i + 1, 1:] - p[i, 1:])
+                break
+        center = np.array([ne[0], ne[1], -(self.base + self.size[2] / 2.0)])
+        return center, np.eye(3), self.size / 2.0
+
+
 class World:
 
     def __init__(self, scenario):
@@ -49,8 +85,23 @@ class World:
         for box in scenario.boxes:
             rot = box.rotation()
             self.boxes.append((box.center.astype(float), rot, box.size.astype(float) / 2.0))
+        self._static_boxes = list(self.boxes)
+        sim = getattr(scenario, 'simulation', None) or {}
+        self.dynamic = [DynamicBox(d) for d in sim.get('dinamicos', []) or []]
         self.cylinders = list(scenario.cylinders)
         self.ground = scenario.ground
+
+    def set_time(self, t, drone_position=None):
+        """Mueve los obstáculos dinámicos al instante t."""
+        if not self.dynamic:
+            return
+        boxes = list(self._static_boxes)
+        for d in self.dynamic:
+            d.update_trigger(t, drone_position)
+            prim = d.primitive(t)
+            if prim is not None:
+                boxes.append(prim)
+        self.boxes = boxes
 
     def raycast(self, origin, directions, max_range):
         """Distancia al primer impacto de cada rayo (inf si no choca)."""
@@ -166,7 +217,8 @@ class SimVehicle:
     controlador de PX4, con límites de velocidad, aceleración y giro."""
 
     def __init__(self, position=(0.0, 0.0, 0.0), yaw=0.0, max_speed=4.0, max_accel=3.0,
-                 kp=1.0, max_yaw_rate=1.2, land_speed=0.7):
+                 kp=1.0, max_yaw_rate=1.2, land_speed=0.7, tilt_from_accel=False,
+                 wind=None, gusts=0.0, gust_period=6.0):
         self.position = np.array(position, dtype=float)
         self.velocity = np.zeros(3)
         self.yaw = float(yaw)
@@ -178,10 +230,36 @@ class SimVehicle:
         self.armed = False
         self.offboard = False
         self.landing = False
+        # Entorno real: el multirrotor acelera inclinándose (a = g·tan θ), así
+        # que al acelerar o frenar los sensores fijos al cuerpo miran al piso o
+        # al techo; y el viento empuja (deriva que el control no compensa).
+        self.tilt_from_accel = bool(tilt_from_accel)
+        self.accel = np.zeros(3)
+        self.wind = np.zeros(2) if wind is None else np.asarray(wind, dtype=float).reshape(2)
+        self.gusts = float(gusts)
+        self.gust_period = float(gust_period)
+        self.time = 0.0
 
     @property
     def q(self):
-        return quat_from_euler(0.0, 0.0, self.yaw)
+        if not self.tilt_from_accel:
+            return quat_from_euler(0.0, 0.0, self.yaw)
+        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        forward = self.accel[0] * cy + self.accel[1] * sy
+        right = -self.accel[0] * sy + self.accel[1] * cy
+        g = 9.81
+        limit = math.radians(35.0)
+        pitch = max(-limit, min(limit, -math.atan2(forward, g)))   # adelante = nariz abajo
+        roll = max(-limit, min(limit, math.atan2(right, g)))
+        return quat_from_euler(roll, pitch, self.yaw)
+
+    def wind_at(self, t):
+        if not np.any(self.wind) and self.gusts <= 0.0:
+            return np.zeros(2)
+        norm = float(np.linalg.norm(self.wind))
+        direction = self.wind / norm if norm > 1e-9 else np.array([0.0, 1.0])
+        gust = self.gusts * max(0.0, math.sin(2.0 * math.pi * t / max(self.gust_period, 0.1)))
+        return self.wind + direction * gust
 
     def step(self, dt, setpoint=None, velocity_ff=None):
         if self.landing:
@@ -209,7 +287,14 @@ class SimVehicle:
         if dv_norm > self.max_accel * dt:
             dv *= self.max_accel * dt / dv_norm
         self.velocity = self.velocity + dv
+        # La actitud sigue a la aceleración con la dinámica del lazo de actitud
+        # (~0.2 s), no a saltos de un paso de integración al otro.
+        alpha = min(1.0, dt / 0.2)
+        self.accel = self.accel + (dv / max(dt, 1e-6) - self.accel) * alpha
         self.position = self.position + self.velocity * dt
+        self.time += dt
+        if -self.position[2] > 0.3:
+            self.position[:2] = self.position[:2] + self.wind_at(self.time) * dt
         if self.position[2] > 0.0:          # no atravesar el piso
             self.position[2] = 0.0
             self.velocity[2] = min(self.velocity[2], 0.0)

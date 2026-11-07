@@ -1,0 +1,27 @@
+# Caso 13: obstáculo súbito. Campo abierto a 3 m/s (el doble del crucero por
+# defecto) con 0.15 s de latencia de la nube; cuando el dron pasa el norte 4 m
+# aparece una pared de 6 m de ancho a 12 m (unos 7 m delante del dron: una
+# puerta de galpón que se abre, un camión que cruza). Con las distancias fijas
+# de antes (lookahead 4 m, rampa 3.5 -> 1.3 m) el dron chocaba a 5 m/s aun sin
+# latencia (03_brechas.md, C1); con el frenado físico
+# v_max = −a·t + √((a·t)² + 2·a·(d − d_keep)) tiene que frenar y rodearla.
+nombre: 13_obstaculo_subito
+descripcion: Pared de 6 m que aparece ~7 m delante del dron a 3 m/s con nube demorada.
+objetos: []
+simulacion:
+  latencia_nube: 0.15
+  dinamicos:
+    - tamano: [0.4, 6.0, 5.0]
+      aparece: {cuando_norte_mayor: 4.0}
+      trayectoria: [[0.0, 12.0, 0.0]]
+mision:
+  tipo: waypoints
+  altura: 2.5
+  waypoints:
+    - [22.0, 0.0]
+  parametros:
+    cruise_speed: 3.0
+esperado:
+  estado_final: DONE
+  waypoints_alcanzados_min: 1
+  despeje_min: 0.6

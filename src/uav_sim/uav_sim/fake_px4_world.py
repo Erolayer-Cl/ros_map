@@ -15,6 +15,9 @@ Cosys-AirSim, así que mapper_node y mission_node corren sin cambiar nada:
     ros2 launch uav_sim fake_sim.launch.py escenario:=06_habitacion
     ros2 service call /mission/map std_srvs/srv/Trigger
 
+Del bloque `simulacion:` del escenario toma la latencia de la nube (se
+publica tarde con el stamp de la captura), el viento y los obstáculos
+dinámicos; la actitud cabecea con la aceleración (`vehicle.tilt_from_accel`).
 No simula física real, latencia de uXRCE-DDS ni preflight checks: que una
 misión ande acá no garantiza que ande en Unreal, pero si se rompe acá se va a
 romper allá.
@@ -64,6 +67,9 @@ class FakePX4World(Node):
         d('lidar.mount_xyz', [0.0, 0.0, -0.15])
         d('lidar.mount_rpy_deg', [0.0, 0.0, 0.0])
         d('lidar.noise', 0.01)
+        # Entorno real (por defecto, lo que diga el bloque `simulacion:` del escenario):
+        d('lidar.latency', -1.0)       # s entre captura y publicación (stamp = captura); <0 = escenario
+        d('vehicle.tilt_from_accel', True)   # actitud por la aceleración, como un multirrotor
         d('vehicle.max_speed', 4.0)
         d('vehicle.max_accel', 3.0)
         d('vehicle.start_yaw_deg', 0.0)
@@ -81,9 +87,18 @@ class FakePX4World(Node):
             mount_frd=tuple(p('lidar.mount_xyz').value),
             mount_rpy_deg=tuple(p('lidar.mount_rpy_deg').value),
             noise_std=p('lidar.noise').value)
+        sim = dict(getattr(self.scenario, 'simulation', None) or {})
+        wind = sim.get('viento') or {}
         self.vehicle = SimVehicle(yaw=math.radians(p('vehicle.start_yaw_deg').value),
                                   max_speed=p('vehicle.max_speed').value,
-                                  max_accel=p('vehicle.max_accel').value)
+                                  max_accel=p('vehicle.max_accel').value,
+                                  tilt_from_accel=p('vehicle.tilt_from_accel').value,
+                                  wind=wind.get('velocidad'), gusts=float(wind.get('rafagas', 0.0)),
+                                  gust_period=float(wind.get('periodo', 6.0)))
+        latency = p('lidar.latency').value
+        self.latency = float(sim.get('latencia_nube', 0.0)) if latency < 0 else float(latency)
+        self._pending = []
+        self._t0 = None
         self.rng = np.random.default_rng(0)
         self.setpoint = None
         self.velocity_ff = None
@@ -145,6 +160,9 @@ class FakePX4World(Node):
 
     def _step(self):
         v = self.vehicle
+        if self._t0 is None:
+            self._t0 = self._now()
+        self.world.set_time(self._now() - self._t0, v.position if v.armed else None)
         if v.offboard and self._now() - self.last_offboard > self.get_parameter('offboard_timeout').value:
             # Failsafe de PX4 por pérdida de offboard: acá, quedarse quieto.
             self.get_logger().warn('failsafe: se cortó offboard_control_mode, saliendo de OFFBOARD')
@@ -196,6 +214,8 @@ class FakePX4World(Node):
         pts = self.lidar.scan(self.world, v.position, v.q, self.rng)
         fields, data, step = xyz_to_pointcloud2_data(pts)
         msg = PointCloud2()
+        # Stamp = instante de CAPTURA; con latencia se publica después (como un
+        # driver real): mapper_node tiene que usar la pose de ese instante.
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.get_parameter('lidar.frame_id').value
         msg.height = 1
@@ -206,7 +226,13 @@ class FakePX4World(Node):
         msg.row_step = step * len(pts)
         msg.is_dense = True
         msg.data = array.array('B', data)
-        self.pub_cloud.publish(msg)
+        if self.latency <= 0.0:
+            self.pub_cloud.publish(msg)
+            return
+        now = self._now()
+        self._pending.append((now + self.latency, msg))
+        while self._pending and self._pending[0][0] <= now + 1e-6:
+            self.pub_cloud.publish(self._pending.pop(0)[1])
 
     def _publish_world(self):
         """La geometría real, en `map` ENU, semitransparente."""

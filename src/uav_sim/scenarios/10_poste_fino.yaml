@@ -1,0 +1,28 @@
+# Caso 10: un poste fino (5 cm de radio, como un poste de luz o un caño) en
+# el medio del camino, y un segundo un poco corrido. Con un lidar de 1° de
+# resolución horizontal un poste de 10 cm a 5 m da 1-2 puntos por anillo: es
+# lo primero que se pierde si el filtro de ruido o el mínimo de puntos por
+# sector son demasiado agresivos (sectors.min_points = 2 con la semántica de
+# k-ésimo punto, outliers con vecindad de 3x3x3 vóxeles de 0.25 m).
+nombre: 10_poste_fino
+descripcion: Dos postes de 10 cm de diámetro en el camino a un waypoint a 16 m.
+objetos:
+  - tipo: cilindro
+    nombre: poste_1
+    centro: [8.0, 0.0]
+    radio: 0.05
+    alto: 5.0
+  - tipo: cilindro
+    nombre: poste_2
+    centro: [11.0, 0.6]
+    radio: 0.05
+    alto: 5.0
+mision:
+  tipo: waypoints
+  altura: 2.5
+  waypoints:
+    - [16.0, 0.0]
+esperado:
+  estado_final: DONE
+  waypoints_alcanzados_min: 1
+  despeje_min: 0.6

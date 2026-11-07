@@ -27,6 +27,8 @@ class MapperConfig:
     max_size: float = 400.0           # m: tope de crecimiento (RAM de la Jetson)
     min_height: float = 0.3           # m sobre el despegue: lo de abajo es piso
     max_height: float = 8.0           # m sobre el despegue: tope absoluto de la grilla 2D
+    floor_slope_deg: float = 2.0      # el piso de la grilla 2D sube d·tan(esto): tolera errores
+    #                                   de actitud con retornos del piso lejanos (0 = plano)
     max_height_above_drone: float = 1.0  # m sobre el DRON: tope de la grilla 2D (techos,
     #                                   aleros, copas: el dron pasa por debajo). <= 0: sólo
     #                                   max_height. El mapa 3D guarda todo igual.
@@ -269,7 +271,14 @@ class WallMapper:
         top = c.max_height
         if c.max_height_above_drone > 0.0:
             top = min(top, drone_h + c.max_height_above_drone)
-        in_band = (heights >= c.min_height) & (heights <= top)
+        floor = c.min_height
+        if c.floor_slope_deg > 0.0 and pts.shape[0]:
+            # El piso "sube" con la distancia: un error de actitud de 1-2° (EKF,
+            # pose interpolada, cabeceo) levanta un retorno del piso a 20 m
+            # 0.3-0.7 m y lo convierte en pared. Cerca no cambia nada.
+            horiz = np.hypot(pts[:, 0] - origin[0], pts[:, 1] - origin[1])
+            floor = c.min_height + horiz * math.tan(math.radians(c.floor_slope_deg))
+        in_band = (heights >= floor) & (heights <= top)
         hits_ne = pts[in_band, :2]
         fov = math.radians(c.sensor_fov_deg if fov_deg is None else float(fov_deg))
         ends = free_ray_ends(origin[:2], hits_ne, n_bins=c.free_ray_bins,

@@ -1,0 +1,43 @@
+# Caso 14: el pasillo del caso 4 con "un día real" a la vez: Mid-360 montado
+# como en mapper_mid360.yaml (12 cm arriba, inclinado 20° hacia abajo), nube
+# con 0.1 s de latencia, actitud que cabecea con la aceleración (al frenar el
+# lidar mira al piso), ruido de 3 cm, polvo (3 retornos sueltos por nube),
+# las hélices vistas por el lidar y viento de costado de 0.5 m/s con ráfagas
+# de +0.8 m/s. Cada uno solo ya rompía algo en el código anterior
+# (03_brechas.md §3: paredes fantasma por pose vieja, "alejándose" de las
+# propias hélices, emergencias por polvo).
+nombre: 14_entorno_real
+descripcion: Pasillo de 4 m con latencia, cabeceo, ruido, polvo, auto-impactos y viento.
+objetos:
+  - tipo: pared
+    desde: [4.0, -2.2]
+    hasta: [24.0, -2.2]
+    alto: 4.0
+    espesor: 0.3
+  - tipo: pared_irregular
+    desde: [4.0, 2.4]
+    hasta: [24.0, 2.4]
+    alto: 4.0
+    espesor: 0.4
+    rugosidad: 0.5
+    tramo: 1.2
+    semilla: 3
+simulacion:
+  latencia_nube: 0.1
+  cabeceo: true
+  ruido: 0.03
+  polvo: {puntos: 3, distancia: [0.6, 5.0]}
+  auto_impactos: [[0.32, 0.32, 0.05], [0.32, -0.32, 0.05], [-0.32, 0.32, 0.05],
+                  [-0.32, -0.32, 0.05], [0.33, 0.33, 0.05], [-0.33, -0.33, 0.05]]
+  viento: {velocidad: [0.0, 0.5], rafagas: 0.8, periodo: 7.0}
+  lidar: {mount_frd: [0.05, 0.0, -0.12], mount_rpy_deg: [0.0, -20.0, 0.0]}
+  mapper: {min_range: 0.4}
+mision:
+  tipo: waypoints
+  altura: 2.0
+  waypoints:
+    - [28.0, 0.0]
+esperado:
+  paredes_planas_min: 1
+  estado_final: DONE
+  waypoints_alcanzados_min: 1
