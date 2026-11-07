@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from uav_wall_mapping.cloud import isolated_mask, outside_box, voxel_downsample
+from uav_wall_mapping.cloud import (_NEIGHBORS, _voxel_keys, isolated_mask, outside_box,
+                                    voxel_downsample)
 from uav_wall_mapping.geometry import body_to_world, yaw_from_quat
 from uav_wall_mapping.occupancy import OccupancyGrid2D, VoxelMap3D
 from uav_wall_mapping.sectors import INF, compute_sectors, free_ray_ends, merge_sectors
@@ -47,6 +48,8 @@ class MapperConfig:
     outlier_voxel: float = 0.25
     outlier_min_points: int = 2       # 1 = sin filtro
     outlier_max_range: float = 8.0
+    outlier_persist: float = 0.6      # s: un punto aislado que se repite en el mismo lugar
+    #                                   (vecindad 3x3x3) en este tiempo es real: cable, poste
     max_range: float = 40.0           # m
     hit_logodds: float = 0.85
     miss_logodds: float = -0.4
@@ -158,6 +161,7 @@ class WallMapper:
         self.forgotten = 0             # celdas olvidadas por efímeras (acumulado)
         self._last_forget = -math.inf
         self.outliers = 0              # puntos aislados descartados (acumulado)
+        self._isolated_history = []    # [(stamp, claves de vóxel en el mundo)] de puntos aislados
         self.last_extract_sec = 0.0
 
     # ------------------------------------------------------------------
@@ -206,6 +210,9 @@ class WallMapper:
         if filter_outliers and c.outlier_min_points > 1 and pts.shape[0]:
             noisy = isolated_mask(pts, voxel=c.outlier_voxel, min_points=c.outlier_min_points,
                                   max_range=c.outlier_max_range)
+            if np.any(noisy):
+                noisy[np.nonzero(noisy)[0][self._persistent(pts[noisy], mount, position_ned, q,
+                                                            float(stamp))]] = False
             self.outliers += int(np.count_nonzero(noisy))
             pts = pts[~noisy]
         if downsample and downsample > 0.0:
@@ -221,6 +228,27 @@ class WallMapper:
         return self.integrate(world, origin, position_ned, stamp, source=source,
                               sensor_heading=heading, min_points=min_points,
                               min_cloud_points=min_cloud_points, fov_deg=fov_deg)
+
+    def _persistent(self, isolated_sensor, mount, position_ned, q, stamp):
+        """Máscara de los puntos aislados que ya aparecieron aislados en el
+        mismo lugar del mundo (vecindad 3x3x3 de vóxeles) en las nubes de los
+        últimos `outlier_persist` s. El polvo y los insectos no se repiten en
+        el mismo lugar; un cable o un poste fino, sí: con 16 anillos a 3.9° un
+        cable de 3 cm da un punto suelto por nube (QA, caso 1d)."""
+        c = self.cfg
+        world = body_to_world(mount.to_body(isolated_sensor), position_ned, q)
+        keys_idx = np.floor(world / c.outlier_voxel).astype(np.int64)
+        self._isolated_history = [(t, k) for t, k in self._isolated_history
+                                  if stamp - c.outlier_persist <= t < stamp]
+        keep = np.zeros(len(world), dtype=bool)
+        if self._isolated_history:
+            past = np.unique(np.concatenate([k for _, k in self._isolated_history]))
+            for offset in _NEIGHBORS:
+                cand = _voxel_keys(keys_idx + offset)
+                pos = np.minimum(np.searchsorted(past, cand), len(past) - 1)
+                keep |= past[pos] == cand
+        self._isolated_history.append((stamp, np.unique(_voxel_keys(keys_idx))))
+        return keep
 
     def integrate(self, points_world, sensor_origin, drone_position, stamp,
                   source='lidar', sensor_heading=0.0, min_points=None, min_cloud_points=None,

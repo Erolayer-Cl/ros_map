@@ -202,6 +202,23 @@ class FilterTest(unittest.TestCase):
         self.assertTrue(np.all(noisy[len(wall):len(wall) + 5]))
         self.assertFalse(noisy[-1])
 
+    def test_repeated_isolated_point_is_kept(self):
+        """Un punto suelto que se repite en el mismo lugar (un cable fino) pasa
+        el filtro desde la segunda nube; uno al azar (polvo), no."""
+        mapper = WallMapper(MapperConfig(sectors_from_map=False))
+        mapper.set_home(0.0)
+        mount = SensorMount(axes='frd')
+        e = np.linspace(-2, 2, 80)
+        wall = np.column_stack((np.full_like(e, 9.0), e, np.zeros_like(e)))
+        cable = np.array([[4.0, 0.0, 0.0]])
+        before = []
+        for k in range(3):
+            n0 = mapper.outliers
+            mapper.integrate_sensor(np.vstack((wall, cable)), mount, (0.0, 0.0, -2.0),
+                                    quat_from_yaw(0.0), 0.1 * k)
+            before.append(mapper.outliers - n0)
+        self.assertEqual(before, [1, 0, 0])
+
     def test_body_box(self):
         pts = np.array([[0.3, 0.3, 0.0], [0.6, 0.0, 0.0], [0.0, 0.0, 0.5]])
         keep = outside_box(pts, (-0.5, 0.5, -0.5, 0.5, -0.35, 0.4))
