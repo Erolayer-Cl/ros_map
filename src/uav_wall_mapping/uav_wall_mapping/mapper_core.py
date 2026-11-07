@@ -312,8 +312,9 @@ class WallMapper:
         ends = free_ray_ends(origin[:2], hits_ne, n_bins=c.free_ray_bins,
                              no_hit_range=0.0 if starved else c.no_hit_free_range,
                              fov_center=sensor_heading, fov=fov,
-                             max_range=c.max_range, neighbor_bins=c.free_ray_neighbors)
-        self.grid.update(origin[:2], hits_ne, ends, stamp=float(stamp))
+                             max_range=c.max_range, neighbor_bins=c.free_ray_neighbors,
+                             split=True)
+        self.grid.update(origin[:2], hits_ne, ends[0], stamp=float(stamp), weak_ends_ne=ends[1])
         self.voxels.insert(pts[heights >= c.voxel_min_height], sensor_origin=origin,
                            stamp=float(stamp))
         if c.forget_after > 0.0 and float(stamp) - self._last_forget >= c.forget_period:

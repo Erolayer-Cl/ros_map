@@ -67,7 +67,8 @@ def merge_sectors(sector_list):
 
 def free_ray_ends(sensor_ne, hits_ne, n_bins=360, no_hit_range=0.0,
                   fov_center=0.0, fov=2.0 * math.pi, max_range=40.0,
-                  neighbor_bins=3, margin=0.3, grazing_margin=0.15, max_shorten=2.0):
+                  neighbor_bins=3, margin=0.3, grazing_margin=0.15, max_shorten=2.0,
+                  split=False):
     """Extremos de los rayos de espacio libre para la grilla 2D.
 
     Para cada sector fino (vistos desde el sensor): si hay impactos, el rayo
@@ -82,6 +83,11 @@ def free_ray_ends(sensor_ne, hits_ne, n_bins=360, no_hit_range=0.0,
     vacío nunca llega más lejos que el impacto más cercano de los
     `neighbor_bins` sectores vecinos (menos `margin`): si al lado hay una
     pared a 3 m, el vacío no se talla a 6 m a través de ella.
+
+    Además, con `split=True` se devuelven aparte los rayos con impacto y los
+    "sin retorno": la ausencia de eco es evidencia débil (un cable de 3 cm que
+    un lidar de patrón no repetitivo ve en uno de cada cuatro escaneos, una
+    superficie oscura, un vidrio) y no tiene que borrar lo que sí se vio.
 
     Y con los rayos que sí chocan: uno casi rasante a una pared viaja pegado a
     su cara antes de impactar más adelante, y "vaciaría" las celdas de la cara
@@ -147,6 +153,11 @@ def free_ray_ends(sensor_ne, hits_ne, n_bins=360, no_hit_range=0.0,
         centers, reach = centers[keep], reach[keep]
         ends.append(np.column_stack((sensor[0] + reach * np.cos(centers),
                                      sensor[1] + reach * np.sin(centers))))
+    if split:
+        # (rayos con impacto, rayos "sin retorno"): la grilla trata los segundos
+        # como evidencia débil (ver OccupancyGrid2D.update, `weak_ends_ne`).
+        weak = ends[1] if len(ends) > 1 else np.zeros((0, 2))
+        return ends[0], weak
     return np.vstack(ends) if ends else np.zeros((0, 2))
 
 

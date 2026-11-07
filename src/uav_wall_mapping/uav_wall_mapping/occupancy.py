@@ -66,7 +66,7 @@ class OccupancyGrid2D:
     def __init__(self, resolution=0.15, initial_size=40.0, max_size=400.0,
                  hit_logodds=0.85, miss_logodds=-0.4, min_logodds=-2.0,
                  max_logodds=3.5, occupied_threshold=0.65, free_threshold=0.35,
-                 grow_step=10.0, occupied_miss_scale=0.3):
+                 grow_step=10.0, occupied_miss_scale=0.3, weak_protect_sec=2.0):
         self.resolution = float(resolution)
         self.max_cells = int(math.ceil(max_size / self.resolution))
         self.grow_cells = max(1, int(math.ceil(grow_step / self.resolution)))
@@ -82,6 +82,9 @@ class OccupancyGrid2D:
         # rasante a una pared lejana atraviesa celdas que sí están ocupadas. Sin
         # esto, los objetos bajos y las paredes vistas de costado se borran.
         self.occupied_miss_scale = float(occupied_miss_scale)
+        # s durante los que un rayo "sin eco" no vacía una celda con impactos
+        # (ver `update`, `weak_ends_ne`).
+        self.weak_protect_sec = float(weak_protect_sec)
 
         cells = max(2, int(math.ceil(initial_size / self.resolution)))
         cells = min(cells, self.max_cells)
@@ -167,7 +170,7 @@ class OccupancyGrid2D:
     # ------------------------------------------------------------------
     # Actualización
     # ------------------------------------------------------------------
-    def update(self, sensor_ne, hits_ne, ray_ends_ne, stamp=None):
+    def update(self, sensor_ne, hits_ne, ray_ends_ne, stamp=None, weak_ends_ne=None):
         """Integra una observación.
 
         `hits_ne`: puntos sólidos (N, 2) -> sus celdas suben hacia "ocupado".
@@ -180,9 +183,11 @@ class OccupancyGrid2D:
         sensor = np.asarray(sensor_ne, dtype=float).reshape(2)
         hits = np.asarray(hits_ne, dtype=float).reshape(-1, 2)
         ends = np.asarray(ray_ends_ne, dtype=float).reshape(-1, 2)
-        if hits.shape[0] == 0 and ends.shape[0] == 0:
+        weak_in = (np.zeros((0, 2)) if weak_ends_ne is None
+                   else np.asarray(weak_ends_ne, dtype=float).reshape(-1, 2))
+        if hits.shape[0] == 0 and ends.shape[0] == 0 and weak_in.shape[0] == 0:
             return
-        self.ensure_contains(np.vstack((hits, ends, sensor[None, :])))
+        self.ensure_contains(np.vstack((hits, ends, weak_in, sensor[None, :])))
 
         hit_all = self._flat_in_bounds(hits, count_dropped=True)
         hit_flat = np.unique(hit_all)
@@ -205,6 +210,32 @@ class OccupancyGrid2D:
                 miss = np.where(current >= self.occ_l, self.miss * self.occupied_miss_scale, self.miss)
                 lo[free_flat] = np.clip(current + miss, self.min_l, self.max_l)
                 self.known.reshape(-1)[free_flat] = True
+
+        weak = (np.zeros((0, 2)) if weak_ends_ne is None
+                else np.asarray(weak_ends_ne, dtype=float).reshape(-1, 2))
+        if weak.shape[0]:
+            # Rayos "sin retorno": sólo vacían celdas sin evidencia de ocupación
+            # (log-odds <= 0). Un sector sin eco no prueba que no haya nada: un
+            # cable fino visto de vez en cuando, una superficie oscura o un vidrio
+            # no devuelven eco en cada escaneo, y sin esto se borraban del mapa
+            # entre dos detecciones (caso QA 1d_cable_fase: el dron chocaba).
+            weak_flat = self._ray_cells(sensor, weak)
+            if hit_flat.size:
+                weak_flat = np.setdiff1d(weak_flat, hit_flat, assume_unique=True)
+            if weak_flat.size:
+                lo = self.log_odds.reshape(-1)
+                current = lo[weak_flat]
+                # Una celda con impactos recientes (< `weak_protect_sec`) no se
+                # toca: el cable intermitente se re-detecta cada pocas décimas.
+                # Pasado ese tiempo sin re-confirmación, el rayo sin eco la vacía
+                # normal: así una persona o una caja que se fue no queda como
+                # fantasma bloqueando el camino.
+                recent = np.zeros(weak_flat.shape, dtype=bool)
+                if stamp is not None:
+                    recent = self.last_hit.reshape(-1)[weak_flat] >= float(stamp) - self.weak_protect_sec
+                lo[weak_flat] = np.where(recent & (current > 0.0), current,
+                                         np.clip(current + self.miss, self.min_l, self.max_l))
+                self.known.reshape(-1)[weak_flat] = True
 
         if hit_flat.size:
             lo = self.log_odds.reshape(-1)

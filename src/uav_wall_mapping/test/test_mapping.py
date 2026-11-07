@@ -92,6 +92,25 @@ class GridTest(unittest.TestCase):
         grid.update((0.0, 0.0), far, far)
         self.assertGreaterEqual(grid.snapshot().value_at(30.05, -24.95), 50)
 
+    def test_no_return_rays_do_not_erase_seen_obstacles(self):
+        """Un cable visto de vez en cuando no se borra con los rayos sin eco."""
+        grid = OccupancyGrid2D(resolution=0.15, initial_size=20.0)
+        cable = np.array([[5.0, 0.0]])
+        hit_ends, weak = free_ray_ends((0.0, 0.0), np.zeros((0, 2)), n_bins=360,
+                                       no_hit_range=8.0, split=True)
+        grid.update((0.0, 0.0), cable, cable, stamp=0.0)      # una detección
+        for k in range(1, 20):                                # 1.9 s de escaneos sin eco
+            grid.update((0.0, 0.0), np.zeros((0, 2)), hit_ends, stamp=0.1 * k,
+                        weak_ends_ne=weak)
+        snap = grid.snapshot()
+        self.assertGreaterEqual(snap.value_at(5.05, 0.05), 65)
+        self.assertLessEqual(snap.value_at(3.0, 0.0), 30)    # lo desconocido sí se libera
+        # Si no se re-confirma en `weak_protect_sec`, se olvida (lo que se fue).
+        for k in range(20, 60):
+            grid.update((0.0, 0.0), np.zeros((0, 2)), hit_ends, stamp=0.1 * k,
+                        weak_ends_ne=weak)
+        self.assertLess(grid.snapshot().value_at(5.05, 0.05), 65)
+
     def test_empty_sector_does_not_carve_through_neighbor_wall(self):
         """Un sector sin impacto entre dos con pared no se talla a través de ella."""
         hits = np.array([[3.0, -0.05], [3.0, 0.05]])
