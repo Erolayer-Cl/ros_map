@@ -318,7 +318,12 @@ class MapperExportTest(unittest.TestCase):
         self.assertAlmostEqual(walls[0].height_max, 3.5, delta=0.4)
         sectors = mapper.sectors(0.1, (0.0, 0.0, -2.0))
         self.assertAlmostEqual(float(sectors[0]), 8.0, delta=0.3)
+        state = mapper.capture_state()
+        mapper.integrate(wall, (0.0, 0.0, -2.0), (0.0, 0.0, -2.0), stamp=0.2)  # sigue mapeando
+        self.assertEqual(len(mapper.extract_walls(state)), 1)
         with tempfile.TemporaryDirectory() as tmp:
+            save_map_bundle(tmp, 'copia', state)
+            self.assertTrue(os.path.getsize(os.path.join(tmp, 'copia.png')) > 0)
             files = save_map_bundle(tmp, 'prueba', mapper)
             for f in files:
                 self.assertTrue(os.path.getsize(f) > 0, f)

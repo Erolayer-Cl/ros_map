@@ -86,6 +86,45 @@ class SectorInfo:
     #                               mira (fuera del campo de una cámara) es DESCONOCIDO
 
 
+class _FrozenVoxels:
+    """Lo único que `save_map_bundle` le pide al mapa 3D, ya copiado."""
+
+    def __init__(self, points):
+        self._points = points
+
+    def points(self, min_hits=2, with_views=False):
+        return self._points
+
+
+@dataclass
+class MapState:
+    """Copia del estado del mapa para procesarla FUERA del lock de mapper_node.
+
+    Copiarla es barato (arreglos numpy); extraer paredes o escribir PNG/SVG/PLY
+    puede tardar más de un segundo en la Jetson, y con el lock tomado los
+    sectores de la evasión llegaban tarde (03_brechas.md, A5). Tiene la misma
+    interfaz que `WallMapper` para `save_map_bundle`.
+    """
+    grid_snapshot: object
+    cells: np.ndarray
+    views: np.ndarray
+    voxel_points: np.ndarray
+    voxel_views: np.ndarray
+    home_down: float
+    trajectory: list
+    clouds_integrated: int
+    points_integrated: int
+    cfg: object
+    walls: list = field(default_factory=list)
+
+    def snapshot(self, stamp=0.0):
+        return self.grid_snapshot
+
+    @property
+    def voxels(self):
+        return _FrozenVoxels(self.voxel_points)
+
+
 class WallMapper:
 
     def __init__(self, config=None):
@@ -346,15 +385,30 @@ class WallMapper:
         return any(now - stamp <= self.cfg.sector_timeout for stamp, *_ in self._sources.values())
 
     # ------------------------------------------------------------------
-    def extract_walls(self):
-        t0 = time.monotonic()
+    def capture_state(self):
+        """Copia rápida para procesar afuera del lock (ver `MapState`)."""
         voxels, voxel_views = self.voxels.points(self.cfg.voxel_min_hits, with_views=True)
         cells, views = self.grid.occupied_points(with_views=True)
-        walls = self.extractor.extract(cells, views, voxels, voxel_views,
-                                       home_down=self.home_down or 0.0,
+        return MapState(grid_snapshot=self.grid.snapshot(), cells=cells, views=views,
+                        voxel_points=voxels, voxel_views=voxel_views,
+                        home_down=self.home_down or 0.0, trajectory=list(self.trajectory),
+                        clouds_integrated=self.clouds_integrated,
+                        points_integrated=self.points_integrated, cfg=self.cfg,
+                        walls=list(self.walls))
+
+    def extract_walls(self, state=None):
+        """Paredes del mapa. Con `state` (de `capture_state()`) trabaja sobre la
+        copia y no toca la grilla: se puede llamar sin el lock del nodo
+        (pero no en paralelo consigo misma: el `WallTracker` es uno solo)."""
+        t0 = time.monotonic()
+        if state is None:
+            state = self.capture_state()
+        walls = self.extractor.extract(state.cells, state.views, state.voxel_points,
+                                       state.voxel_views, home_down=state.home_down,
                                        min_height=self.cfg.min_height)
-        annotate_3d(walls, voxels, home_down=self.home_down or 0.0)
+        annotate_3d(walls, state.voxel_points, home_down=state.home_down)
         self.walls = self.tracker.assign(walls)
+        state.walls = self.walls
         self.last_extract_sec = time.monotonic() - t0
         return self.walls
 

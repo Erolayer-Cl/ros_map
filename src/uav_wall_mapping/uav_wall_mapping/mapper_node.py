@@ -566,8 +566,10 @@ class MapperNode(Node):
         self.pub_map.publish(msg)
 
     def _publish_walls(self):
+        # Copia bajo el lock, extracción afuera: los sectores (10 Hz) no esperan.
         with self.lock:
-            walls = self.mapper.extract_walls()
+            state = self.mapper.capture_state()
+        walls = self.mapper.extract_walls(state)
         took = self.mapper.last_extract_sec
         if took > 1.0:
             self.get_logger().warn(f'la extracción de paredes tardó {took:.1f} s: subir '
@@ -683,10 +685,13 @@ class MapperNode(Node):
     def _srv_save(self, request, response):
         stamp = time.strftime('%Y%m%d_%H%M%S')
         try:
+            # Copia bajo el lock; paredes y archivos afuera (puede tardar segundos
+            # justo cuando el dron vuelve, y la evasión necesita los sectores).
             with self.lock:
-                self.mapper.extract_walls()
-                files = save_map_bundle(self._output_dir(), f'mapa_{stamp}', self.mapper,
-                                        {'fecha': stamp})
+                state = self.mapper.capture_state()
+            self.mapper.extract_walls(state)
+            files = save_map_bundle(self._output_dir(), f'mapa_{stamp}', state,
+                                    {'fecha': stamp})
         except OSError as exc:
             response.success = False
             response.message = f'no se pudo guardar el mapa: {exc}'
