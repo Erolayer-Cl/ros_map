@@ -21,15 +21,18 @@ class FakeVehicle:
         self.offboard = False
         self.pos = np.zeros(3)
         self.sectors_kwargs = {}
+        self.pose_valid = True
+        self.sectors_on = True
 
     def tick(self, t):
         if self.core.stream_offboard and self.core.setpoint and self.armed:
             target = np.array(self.core.setpoint[:3])
             step = np.clip(target - self.pos, -0.1, 0.1)
             self.pos = self.pos + step
-        self.core.update_vehicle(self.pos, (0.0, 0.0, 0.0), 0.0)
+        self.core.update_vehicle(self.pos, (0.0, 0.0, 0.0), 0.0, valid=self.pose_valid, stamp=t)
         self.core.update_status(self.armed, self.offboard)
-        self.core.update_sectors(np.full(72, float('inf')), t, **self.sectors_kwargs)
+        if self.sectors_on:
+            self.core.update_sectors(np.full(72, float('inf')), t, **self.sectors_kwargs)
         self.core.step(t)
         for cmd in self.core.pop_commands():
             if cmd == 'arm':
@@ -126,6 +129,68 @@ class MissionCoreTest(unittest.TestCase):
             vehicle.tick(t)
         self.assertAlmostEqual(vehicle.pos[0], north0, delta=0.05)    # no se movió
         self.assertGreater(abs(core._yaw_sp), 0.5)                     # pero gira
+
+    def fly_to_navigate(self, core, vehicle, t=0.0):
+        vehicle.tick(t)
+        core.start_waypoints(t)
+        while t < 10.0 and core.state != State.NAVIGATE:
+            t += 0.05
+            vehicle.tick(t)
+        self.assertEqual(core.state, State.NAVIGATE)
+        return t
+
+    def test_pose_loss_brakes_then_lands(self):
+        core = make_core()
+        vehicle = FakeVehicle(core)
+        t = self.fly_to_navigate(core, vehicle)
+        vehicle.pose_valid = False            # xy_valid = false en vuelo
+        landed_at = None
+        for _ in range(80):
+            t += 0.05
+            vehicle.tick(t)
+            if core.state == State.LAND and landed_at is None:
+                landed_at = t
+        self.assertIsNotNone(landed_at)
+        self.assertIsNone(core.velocity_setpoint)
+
+    def test_sensor_loss_lands_after_timeout(self):
+        core = make_core(**{'avoid.sensor_loss_land_after': 3.0})
+        vehicle = FakeVehicle(core)
+        t = self.fly_to_navigate(core, vehicle)
+        vehicle.sectors_on = False
+        for _ in range(40):                   # 2 s: frena pero no aterriza
+            t += 0.05
+            vehicle.tick(t)
+        self.assertNotEqual(core.state, State.LAND)
+        for _ in range(40):
+            t += 0.05
+            vehicle.tick(t)
+        self.assertEqual(core.state, State.LAND)
+
+    def test_failed_return_lands(self):
+        core = make_core()
+        vehicle = FakeVehicle(core)
+        t = self.fly_to_navigate(core, vehicle)
+        core._go_home(t, 'prueba')
+        core._on_goal_failed(t, 'rodeado de obstáculos')
+        self.assertEqual(core.state, State.LAND)
+        self.assertIn('land', core.pop_commands())
+
+    def test_altitude_is_clamped(self):
+        core = make_core(**{'waypoints': [5.0, 0.0, 50.0], 'safety.max_altitude': 10.0})
+        vehicle = FakeVehicle(core)
+        t = self.fly_to_navigate(core, vehicle)
+        self.assertAlmostEqual(core.home[2] - core._goal[2], 10.0)
+
+    def test_geofence_clamps_reference(self):
+        core = make_core(**{'safety.geofence': [-2.0, -2.0, 2.0, 2.0],
+                            'waypoints': [15.0, 0.0, 3.0]})
+        vehicle = FakeVehicle(core)
+        t = self.fly_to_navigate(core, vehicle)
+        for _ in range(200):
+            t += 0.05
+            vehicle.tick(t)
+        self.assertLessEqual(core._carrot[0], core.home[0] + 2.0 + 1e-6)
 
     def test_bad_area_is_rejected(self):
         core = make_core(**{'map_mission.area': [0.0, 0.0, 0.0, 5.0]})

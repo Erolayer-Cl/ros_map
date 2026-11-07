@@ -104,7 +104,7 @@ def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, override
         # --- "PX4" ---
         setpoint = core.setpoint if core.stream_offboard else None
         vehicle.step(dt, setpoint, core.velocity_setpoint)
-        core.update_vehicle(vehicle.position, vehicle.velocity, vehicle.yaw)
+        core.update_vehicle(vehicle.position, vehicle.velocity, vehicle.yaw, stamp=t)
         core.update_status(vehicle.armed, vehicle.offboard)
         mapper.update_trajectory(vehicle.position)
         poses.add_position(t, vehicle.position)

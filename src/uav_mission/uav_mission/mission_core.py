@@ -122,6 +122,17 @@ DEFAULTS = {
     'map_mission.goal_timeout': 60.0,
     'map_mission.max_goal_failures': 12,
     'scan.yaw_rate': 0.6,
+    # --- failsafes (docs/evasion-entornos-reales.md) ---
+    'nav.pose_timeout': 0.5,            # s sin posición válida de PX4: frenar (hold)
+    'nav.pose_loss_land_after': 2.0,    # s sin posición: aterrizar en el lugar (0 = nunca)
+    'avoid.sensor_loss_land_after': 10.0,  # s sin datos de obstáculos en vuelo: aterrizar (0 = nunca)
+    'avoid.on_return_failure': 'land',  # land | hold: si no se puede volver al despegue
+    'nav.max_tracking_error': 0.75,     # m (KR usa 0.75): más lejos de la referencia = frenar (0 = off)
+    'nav.tracking_brake_sec': 1.0,      # s que se frena al dispararse
+    'safety.geofence': [],              # [n0, e0, n1, e1] relativos al despegue; [] = automática
+    'safety.geofence_margin': 3.0,      # m alrededor de map_mission.area (geocerca automática)
+    'safety.min_altitude': 0.5,         # m sobre el despegue: la referencia nunca baja de esto
+    'safety.max_altitude': 20.0,        # m sobre el despegue: ni sube de esto
 }
 
 
@@ -215,6 +226,14 @@ class MissionCore:
         self._speed_cap = math.inf
         self._ahead = math.inf
 
+        # --- failsafes ---
+        self._pose_time = None          # instante de la última posición válida (None = "ahora")
+        self._pose_lost_since = None
+        self._sensor_lost_since = None
+        self._tracking_brake_until = -math.inf
+        self._fence = None              # (n0, e0, n1, e1) absolutos, o None
+        self._fence_warned = False
+
         self._map_area = None
         self._map_start = 0.0
         self._lanes = []
@@ -271,10 +290,13 @@ class MissionCore:
     # ------------------------------------------------------------------
     # Entradas
     # ------------------------------------------------------------------
-    def update_vehicle(self, position, velocity, heading, valid=True):
+    def update_vehicle(self, position, velocity, heading, valid=True, stamp=None):
+        """Posición de PX4. `stamp`: cuándo llegó (para el timeout de pose); sin
+        stamp se la toma como recién llegada."""
         self.position_valid = bool(valid)
         if not valid:
             return
+        self._pose_time = None if stamp is None else float(stamp)
         position = (float(position[0]), float(position[1]), float(position[2]))
         if self.armed and self._last_position is not None:
             self._distance_traveled += math.dist(position, self._last_position)
@@ -455,6 +477,7 @@ class MissionCore:
         self._yaw_sp = self.heading
         self._takeoff_xy = (self.position[0], self.position[1])
         if airborne:
+            self._compute_fence()
             self._enter(State.TAKEOFF, f'ya en el aire: ajustando altura a {self._mission_altitude():.1f} m')
         else:
             self._arm_ticks = 0
@@ -471,6 +494,11 @@ class MissionCore:
         return self.home[2] - altitude
 
     def _set_goal(self, north, east, altitude, kind, now):
+        low, high = float(self.p('safety.min_altitude')), float(self.p('safety.max_altitude'))
+        if not low <= altitude <= high:
+            self.log('warn', f'{kind}: altura {altitude:.1f} m fuera de [{low:.1f}, {high:.1f}] m '
+                             '(safety.min_altitude / max_altitude): se recorta')
+            altitude = min(max(altitude, low), high)
         self._goal = (float(north), float(east), self._altitude_down(altitude))
         self._goal_kind = kind
         self._goal_id += 1
@@ -540,6 +568,8 @@ class MissionCore:
         if self.state == State.ARMING:
             self._step_arming(now)
             return
+        if self._pose_failsafe(now) or self._sensor_failsafe(now):
+            return
         if self.state == State.HOLD:
             self._hold()
             return
@@ -550,6 +580,130 @@ class MissionCore:
             self._step_scan(now)
             return
         self._step_navigation(now)
+
+    # ------------------------------------------------------------------
+    # Failsafes
+    # ------------------------------------------------------------------
+    def _pose_failsafe(self, now):
+        """Sin posición válida de PX4 (tópico cortado o xy_valid = False en
+        vuelo): no se puede navegar ni esquivar con una pose congelada. Se deja
+        fija la referencia (PX4 frena) y, si dura, se aterriza en el lugar.
+        Devuelve True si tomó el control de este ciclo."""
+        age = 0.0 if self._pose_time is None else now - self._pose_time
+        lost = (not self.position_valid) or age > float(self.p('nav.pose_timeout'))
+        if not lost:
+            if self._pose_lost_since is not None:
+                self.log('info', f'posición de PX4 recuperada tras {now - self._pose_lost_since:.1f} s')
+                self._pose_lost_since = None
+                self._ramp_start = now
+            return False
+        if self._pose_lost_since is None:
+            self._pose_lost_since = now
+            self.log('warn', 'sin posición válida de PX4 (vehicle_local_position cortada o '
+                             'xy_valid = false): frenando con la referencia fija')
+        self.velocity_setpoint = None
+        land_after = float(self.p('nav.pose_loss_land_after'))
+        if land_after > 0.0 and now - self._pose_lost_since > land_after:
+            self._request_land(f'sin posición válida hace {now - self._pose_lost_since:.1f} s: '
+                               'aterrizando en el lugar')
+            return True
+        self.message = f'sin posición válida hace {now - self._pose_lost_since:.1f} s: frenando'
+        return True
+
+    def _sensor_failsafe(self, now):
+        """Sin datos de obstáculos en vuelo por mucho tiempo: aterrizar en el
+        lugar (como PX4-Avoidance, que tras perder la nube pasa a hover y
+        después a terminación; la Collision Prevention de PX4 pasa a Hold a los
+        5 s). El freno inmediato lo hace la navegación (hold_on_sensor_loss)."""
+        if (not self.p('avoid.enabled') or not self._sectors_ever
+                or self._sectors_fresh(now)):
+            self._sensor_lost_since = None
+            return False
+        if self._sensor_lost_since is None:
+            self._sensor_lost_since = now
+        land_after = float(self.p('avoid.sensor_loss_land_after'))
+        if land_after > 0.0 and now - self._sensor_lost_since > land_after:
+            self._request_land(f'sin datos de obstáculos hace {now - self._sensor_lost_since:.0f} s: '
+                               'aterrizando en el lugar')
+            return True
+        return False
+
+    def _compute_fence(self):
+        """Geocerca blanda (en este nodo; la de PX4 es aparte, GF_*): la
+        referencia nunca sale de ella. Explícita en `safety.geofence` (relativa
+        al despegue) o, en el mapeo, el área + `safety.geofence_margin`."""
+        fence = [float(v) for v in (self.p('safety.geofence') or [])]
+        margin = float(self.p('safety.geofence_margin'))
+        if len(fence) == 4:
+            n0, e0, n1, e1 = fence
+            hn, he = self.home[0], self.home[1]
+            self._fence = (hn + min(n0, n1), he + min(e0, e1), hn + max(n0, n1), he + max(e0, e1))
+        elif self.mission == MissionType.MAPPING and self._map_area is not None:
+            n0, e0, n1, e1 = self._map_area
+            self._fence = (min(n0, n1) - margin, min(e0, e1) - margin,
+                           max(n0, n1) + margin, max(e0, e1) + margin)
+        else:
+            self._fence = None
+        self._fence_warned = False
+
+    def _apply_fence(self):
+        if self._fence is None:
+            return
+        n0, e0, n1, e1 = self._fence
+        n = min(max(self._carrot[0], n0), n1)
+        e = min(max(self._carrot[1], e0), e1)
+        if (n, e) != (self._carrot[0], self._carrot[1]):
+            if not self._fence_warned:
+                self._fence_warned = True
+                self.log('warn', f'geocerca: la referencia ({self._carrot[0]:.1f}, '
+                                 f'{self._carrot[1]:.1f}) salía del área permitida; se recorta')
+            self._carrot[0], self._carrot[1] = n, e
+        elif self._fence_warned and n0 + 0.5 < n < n1 - 0.5 and e0 + 0.5 < e < e1 - 0.5:
+            self._fence_warned = False
+
+    def _clamp_altitude_down(self, target_d):
+        """Altura (D de NED) dentro de [min_altitude, max_altitude] sobre el despegue."""
+        if self.home is None:
+            return target_d
+        low = self.home[2] - float(self.p('safety.min_altitude'))
+        high = self.home[2] - float(self.p('safety.max_altitude'))
+        return min(max(target_d, high), low)
+
+    def _tracking_error(self):
+        """Cuánto se pasó el dron por DELANTE de la referencia (en la dirección
+        de avance: viene más rápido de lo pedido, p. ej. al frenar o con viento
+        de cola) y la diferencia de altura. El desvío lateral no cuenta: frenar
+        no lo corrige (lo corrige el control de posición) y con viento
+        constante frenar cada tanto lo dejaba derivar contra la pared (con
+        0.3 m + climb_speed de tolerancia: subiendo, PX4 va ~1 s atrás)."""
+        pos, carrot = self.position, self._carrot
+        dn, de = pos[0] - carrot[0], pos[1] - carrot[1]
+        if self._avoid_dir_prev is None:
+            horizontal = 0.0
+        else:
+            un, ue = math.cos(self._avoid_dir_prev), math.sin(self._avoid_dir_prev)
+            horizontal = max(0.0, dn * un + de * ue)
+        vertical = max(0.0, abs(pos[2] - carrot[2]) - 0.3 - float(self.p('climb_speed')))
+        return math.hypot(horizontal, vertical)
+
+    def _tracking_failsafe(self, now):
+        """Error de seguimiento excesivo (ráfaga, controlador saturado): frenar
+        un rato en vez de seguir arrastrando la referencia (KR aborta con
+        0.75 m). Devuelve True mientras hay que frenar; la navegación igual
+        corre la evasión antes, para que una huida de emergencia pueda actuar."""
+        limit = float(self.p('nav.max_tracking_error'))
+        if now < self._tracking_brake_until:
+            return True
+        if limit <= 0.0:
+            return False
+        error = self._tracking_error()
+        if error > limit:
+            self.log('warn', f'error de seguimiento {error:.2f} m > {limit:.2f} m: frenando '
+                             f'{self.p("nav.tracking_brake_sec"):.1f} s')
+            self._tracking_brake_until = now + float(self.p('nav.tracking_brake_sec'))
+            self._ramp_start = self._tracking_brake_until
+            return True
+        return False
 
     def _step_arming(self, now):
         # PX4 rechaza OFFBOARD si no viene recibiendo setpoints: primero se
@@ -567,6 +721,7 @@ class MissionCore:
                 self._map_area = (self.home[0] + n0, self.home[1] + e0,
                                   self.home[0] + n1, self.home[1] + e1)
                 self._map_start = now
+            self._compute_fence()
             self._enter(State.TAKEOFF, f'despegando a {self._mission_altitude():.1f} m')
             return
         if now - self._last_arm_request >= 1.0:
@@ -717,6 +872,11 @@ class MissionCore:
     def _on_goal_failed(self, now, reason):
         self.log('warn', f'objetivo {self._goal_kind} abandonado: {reason}')
         if self.state == State.RETURN:
+            if self.p('avoid.on_return_failure') == 'land':
+                # Antes quedaba en HOLD hasta que PX4 cortara por batería.
+                self._request_land(f'no se pudo volver al despegue ({reason}): aterrizando '
+                                   'en el lugar')
+                return
             self._paused_from = None
             self._enter(State.HOLD, f'no se pudo volver al despegue ({reason}): en espera')
             return
@@ -814,6 +974,8 @@ class MissionCore:
                     self._next_goal(now)
                     return
 
+        tracking_brake = self._tracking_failsafe(now)
+
         target = (goal[0], goal[1])
         if self._path is not None and self._path_goal_id == self._goal_id:
             look = path_lookahead(self._path, pos[:2], self.p('nav.path_lookahead'))
@@ -877,6 +1039,13 @@ class MissionCore:
                 self._freeze()
                 return
 
+        if tracking_brake and not (self._emergency_since is not None and self._avoid_active):
+            # Frenar (la huida de emergencia, si hay, tiene prioridad).
+            self._freeze()
+            self._avoid_active = True
+            self._avoid_reason = 'error de seguimiento: frenando'
+            self.message = self._avoid_reason
+            return
         speed = min(cruise * scale, cap)
         self._speed_cap = cap
         if (self._avoid_dir_prev is not None
@@ -995,6 +1164,7 @@ class MissionCore:
         self._carrot[1] += math.sin(direction) * step
         self._limit_along_lead(direction, speed)
         self._clamp_lead()
+        self._apply_fence()
 
     def _limit_along_lead(self, direction, speed):
         """La zanahoria no se adelanta más que `v·lead_time` EN LA DIRECCIÓN DE
@@ -1021,6 +1191,7 @@ class MissionCore:
         self._avoid_dir_prev = None
 
     def _move_vertical(self, target_d):
+        target_d = self._clamp_altitude_down(target_d)
         delta = target_d - self._carrot[2]
         step = float(self.p('climb_speed')) * self._dt
         self._carrot[2] += math.copysign(min(abs(delta), step), delta)

@@ -22,6 +22,10 @@
     control_rate: 20.0
     nav:
       lead_time: 1.0           # s: la zanahoria no se adelanta más que v·esto (al frenar, se recoge)
+      pose_timeout: 0.5        # s sin posición válida de PX4: frenar
+      pose_loss_land_after: 2.0  # s sin posición: aterrizar en el lugar (0 = nunca)
+      max_tracking_error: 0.75 # m de la referencia (KR: 0.75): frenar tracking_brake_sec (0 = off)
+      tracking_brake_sec: 1.0
       yaw_mode: travel         # travel (mirar hacia donde va: obligatorio con cámara) | goal | fixed
       max_yaw_rate: 0.8
       use_planner: true        # A* sobre el mapa: resuelve trampas en U y pasillos
@@ -57,6 +61,18 @@
       hold_on_sensor_loss: true
       require_sensors: true    # no despegar si no llegan /obstacles/sectors
       on_failure: return       # return | hold | skip
+      on_return_failure: land  # land | hold: si no se puede volver al despegue
+      escape_speed: 0.75       # m/s al alejarse en una emergencia (ArduPilot AVOID_BACKUP_SPD)
+      seen_timeout: 1.0        # s: un sector que ningún sensor miró en este tiempo es desconocido
+      fov_check_deg: 20.0      # ± grados alrededor del avance que tienen que estar a la vista
+      sensor_loss_land_after: 10.0   # s sin datos de obstáculos en vuelo: aterrizar (0 = nunca)
+
+    # --- failsafes y límites (docs/evasion-entornos-reales.md) ---
+    safety:
+      geofence: []             # [n0, e0, n1, e1] relativos al despegue; [] = área de mapeo + margen
+      geofence_margin: 3.0     # m alrededor de map_mission.area
+      min_altitude: 0.5        # m sobre el despegue: la referencia nunca baja de esto (salvo LAND)
+      max_altitude: 20.0
 
     # --- /mission/map: misión de mapeo ---
     map_mission:

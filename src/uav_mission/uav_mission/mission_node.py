@@ -140,7 +140,8 @@ class MissionNode(Node):
     def _on_position(self, msg):
         with self.lock:
             self.core.update_vehicle((msg.x, msg.y, msg.z), (msg.vx, msg.vy, msg.vz),
-                                     msg.heading, valid=bool(msg.xy_valid and msg.z_valid))
+                                     msg.heading, valid=bool(msg.xy_valid and msg.z_valid),
+                                     stamp=self._now())
 
     def _on_status(self, msg):
         with self.lock:
