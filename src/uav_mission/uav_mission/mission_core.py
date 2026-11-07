@@ -94,6 +94,7 @@ DEFAULTS = {
     'avoid.lookahead': 4.0,             # m mínimos; crece con la distancia de frenado
     'avoid.stop_distance': 1.3,         # m desde el centro: frenado del todo
     'avoid.emergency_distance': 0.9,
+    'avoid.escape_speed': 0.75,         # m/s al alejarse (ArduPilot AVOID_BACKUP_SPD)
     'avoid.max_decel': 1.0,             # m/s² supuestos para frenar (ArduPilot: ≤ 1)
     'avoid.latency': 0.4,               # s sensor→frenado, sin la edad del dato (PX4 CP_DELAY)
     'avoid.trigger_hold': 0.2,          # s que el desvío tiene que persistir
@@ -151,6 +152,7 @@ class MissionCore:
         self._sectors_stamp = -math.inf
         self._sectors_ever = False
         self._sectors_range = math.inf
+        self._sectors_live = None
         self.snapshot = None
         self.walls_summary = (0, 0, 0)
 
@@ -233,6 +235,7 @@ class MissionCore:
             lookahead=self.p('avoid.lookahead'),
             stop_distance=self.p('avoid.stop_distance'),
             emergency_distance=self.p('avoid.emergency_distance'),
+            escape_speed=self.p('avoid.escape_speed'),
             max_decel=self.p('avoid.max_decel'),
             latency=self.p('avoid.latency'))
 
@@ -285,10 +288,14 @@ class MissionCore:
                 and self.state != State.ARMING and not self._land_requested):
             self._enter(State.PREEMPTED, 'el dron salió de OFFBOARD desde afuera: control cedido')
 
-    def update_sectors(self, ranges, stamp, range_max=math.inf):
+    def update_sectors(self, ranges, stamp, range_max=math.inf, live=None):
         """Sectores de obstáculos. `stamp`: instante de CAPTURA del dato más
-        nuevo que los formó (no el de llegada): con eso se sabe su edad."""
+        nuevo que los formó (no el de llegada): con eso se sabe su edad.
+        `live`: los mismos sectores sólo con sensores en vivo (sin la memoria
+        del mapa); la emergencia se decide con ellos."""
         self._sectors = np.asarray(ranges, dtype=float)
+        self._sectors_live = (np.asarray(live, dtype=float)
+                              if live is not None and len(live) == len(self._sectors) else None)
         self._sectors_stamp = float(stamp)
         self._sectors_ever = True
         self._sectors_range = float(range_max) if range_max and range_max > 0 else math.inf
@@ -792,13 +799,19 @@ class MissionCore:
                 speed_ref = max(math.hypot(self.velocity[0], self.velocity[1]), cruise)
                 cmd = self.avoider.update(self._sectors, desired, dist, self.heading,
                                           speed=speed_ref, data_age=age,
-                                          sensor_range=self._sectors_range)
+                                          sensor_range=self._sectors_range,
+                                          live_ranges=self._sectors_live)
                 self._nearest, self._nearest_bearing = cmd.nearest, cmd.nearest_bearing
                 direction, scale, hold = self._apply_avoidance(cmd, desired, now)
                 if hold:
                     self._freeze()
                     return
-                if not cmd.emergency:
+                if cmd.emergency:
+                    # Alejarse a velocidad fija (no una fracción del crucero: con
+                    # una ráfaga empujando hacia la pared, 0.25·crucero no alcanza).
+                    cap = cmd.max_speed
+                    scale = cmd.max_speed / max(cruise, 1e-3)
+                else:
                     # Tope físico en la dirección que de verdad se va a seguir
                     # (durante el debounce puede no ser la que propuso el VFH).
                     self._ahead, cap = self.avoider.limit_for(

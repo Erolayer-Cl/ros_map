@@ -84,7 +84,7 @@ class AvoidConfig:
     goal_weight: float = 5.0
     heading_weight: float = 1.0
     previous_weight: float = 2.0
-    min_speed_scale: float = 0.25   # escala de velocidad al alejarse en una emergencia
+    escape_speed: float = 0.75      # m/s al alejarse en una emergencia (ArduPilot AVOID_BACKUP_SPD)
 
 
 @dataclass
@@ -189,14 +189,16 @@ class VfhAvoider:
         return travel, max_safe_speed(travel, c.max_decel, delay)
 
     def update(self, ranges, goal_bearing, goal_distance, heading, speed=0.0, data_age=0.0,
-               sensor_range=INF):
+               sensor_range=INF, live_ranges=None):
         """Decide la dirección y el tope de velocidad del próximo ciclo.
 
         `speed`: velocidad horizontal actual o pedida, la mayor (m/s): define
         hasta dónde hay que mirar. `data_age`: edad de los sectores (s): se suma
         a `latency` porque el dron siguió moviéndose desde que se midieron.
         `sensor_range`: alcance de los sectores; un corredor libre se toma como
-        libre sólo hasta ahí (más allá no se sabe).
+        libre sólo hasta ahí (más allá no se sabe). `live_ranges`: sectores
+        sólo de los sensores en vivo; si vienen, la emergencia se decide con
+        ellos (la memoria del mapa frena y desvía, pero no hace huir).
         """
         c = self.cfg
         ranges = np.asarray(ranges, dtype=float)
@@ -205,13 +207,17 @@ class VfhAvoider:
         nearest = float(ranges[nearest_idx])
         cmd = AvoidCommand(nearest=nearest, nearest_bearing=float(self.centers[nearest_idx]))
 
-        if nearest < c.emergency_distance:
-            # Demasiado cerca: lo único sensato es alejarse del punto más cercano.
+        live = ranges if live_ranges is None else np.asarray(live_ranges, dtype=float)
+        live_idx = int(np.argmin(live))
+        if float(live[live_idx]) < c.emergency_distance:
+            # Demasiado cerca (y lo confirma el sensor en vivo): alejarse.
             cmd.emergency = True
+            cmd.nearest_bearing = float(self.centers[live_idx])
+            cmd.nearest = float(live[live_idx])
             cmd.direction = wrap_pi(cmd.nearest_bearing + math.pi)
-            cmd.speed_scale = c.min_speed_scale
+            cmd.max_speed = c.escape_speed
             cmd.deviated = True
-            cmd.reason = (f'obstáculo a {nearest:.1f} m '
+            cmd.reason = (f'obstáculo a {cmd.nearest:.1f} m '
                           f'({math.degrees(cmd.nearest_bearing):.0f}°): alejándose')
             self._previous = cmd.direction
             return cmd

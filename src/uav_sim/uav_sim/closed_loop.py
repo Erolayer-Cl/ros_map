@@ -130,7 +130,8 @@ def run(scenario, mission='mapeo', max_time=400.0, dt=0.05, lidar=None, override
             # la captura, y sólo si hay una fuente en vivo fresca.
             info = mapper.sector_info(t, vehicle.position)
             if info.fresh:
-                core.update_sectors(info.ranges, info.stamp, range_max=mapper.cfg.sector_range)
+                core.update_sectors(info.ranges, info.stamp, range_max=mapper.cfg.sector_range,
+                                    live=info.live)
         if t >= next_map:
             next_map += 0.5
             core.update_map(mapper.snapshot(t))

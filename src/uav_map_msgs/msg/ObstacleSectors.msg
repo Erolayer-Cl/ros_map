@@ -13,6 +13,10 @@ float32 angle_offset       # rumbo NED (rad) del CENTRO del sector 0 (0 = Norte)
 float32 increment          # ancho de cada sector (rad), positivo hacia el Este
 float32 range_max          # m: más allá de esto no se reporta nada
 float32[] ranges           # distancia horizontal desde el centro del dron; inf = libre
+#                            (mínimo entre los sensores en vivo y la memoria del mapa)
+float32[] live_ranges      # lo mismo pero SÓLO sensores en vivo, sin memoria del mapa:
+#                            la emergencia ("alejarse") se decide con esto, para que un
+#                            punto espurio que quedó en la grilla no la dispare
 geometry_msgs/Point position   # posición NED del dron al calcularlos
 float32 band_below         # franja de alturas considerada, relativa al dron (m)
 float32 band_above

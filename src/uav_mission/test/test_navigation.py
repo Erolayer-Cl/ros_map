@@ -55,6 +55,24 @@ class AvoidanceTest(unittest.TestCase):
         self.assertTrue(cmd.emergency)
         self.assertAlmostEqual(abs(cmd.direction), math.pi / 2, delta=0.1)   # hacia el Oeste
 
+    def test_map_memory_alone_does_not_trigger_emergency(self):
+        """Un punto que sólo está en la memoria del mapa frena/desvía pero no
+        hace huir: la emergencia la decide el sensor en vivo."""
+        ranges = free_sectors()
+        ranges[18] = 0.6
+        cmd = self.avoider.update(ranges, 0.0, 10.0, 0.0, live_ranges=free_sectors())
+        self.assertFalse(cmd.emergency)
+        live = free_sectors()
+        live[18] = 0.6
+        cmd = self.avoider.update(ranges, 0.0, 10.0, 0.0, live_ranges=live)
+        self.assertTrue(cmd.emergency)
+
+    def test_escape_speed_is_absolute(self):
+        ranges = free_sectors()
+        ranges[18] = 0.6
+        cmd = VfhAvoider(AvoidConfig(escape_speed=0.75)).update(ranges, 0.0, 10.0, 0.0)
+        self.assertAlmostEqual(cmd.max_speed, 0.75)
+
     def test_surrounded_is_blocked(self):
         cmd = self.avoider.update(np.full(72, 1.5), 0.0, 10.0, 0.0)
         self.assertTrue(cmd.blocked)

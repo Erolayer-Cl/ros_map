@@ -9,8 +9,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from uav_wall_mapping.cloud import (laserscan_to_xyz, pointcloud2_to_xyz,  # noqa: E402
-                                    range_to_xyz, xyz_to_pointcloud2_data)
+from uav_wall_mapping.cloud import (isolated_mask, laserscan_to_xyz,  # noqa: E402
+                                    outside_box, pointcloud2_to_xyz, range_to_xyz,
+                                    xyz_to_pointcloud2_data)
 from uav_wall_mapping.export import save_map_bundle  # noqa: E402
 from uav_wall_mapping.geometry import (SensorMount, quat_from_yaw, quat_slerp,  # noqa: E402
                                        yaw_from_quat)
@@ -176,6 +177,52 @@ class SectorTimingTest(unittest.TestCase):
         # Pared en N = 6 (pose de la captura); el dron ahora está en N = 3.
         info = mapper.sector_info(3.1, (3.0, 0.0, -2.0))
         self.assertAlmostEqual(float(info.ranges[0]), 3.0, delta=0.05)
+
+
+class FilterTest(unittest.TestCase):
+
+    def test_kth_nearest_ignores_single_spurious_point(self):
+        wall = [[5.0, -0.05], [5.0, 0.0], [5.0, 0.05]]
+        ranges, _ = compute_sectors(wall + [[1.0, 0.0]], n_bins=72, min_points=2)
+        self.assertAlmostEqual(ranges[0], 5.0, places=6)        # el polvo a 1 m no cuenta
+        ranges, _ = compute_sectors([[1.0, 0.0], [1.02, 0.01]] + wall, n_bins=72, min_points=2)
+        self.assertAlmostEqual(ranges[0], 1.02, places=2)       # dos puntos juntos sí
+
+    def test_isolated_points_are_noise(self):
+        rng = np.random.default_rng(1)
+        e = np.linspace(-2, 2, 80)
+        z = np.linspace(-1, 1, 10)
+        ee, zz = np.meshgrid(e, z)
+        wall = np.column_stack((np.full(ee.size, 4.0), ee.ravel(), zz.ravel()))
+        dust = rng.uniform(-3, 3, size=(5, 3)) * np.array([0.3, 1.0, 1.0]) + np.array([1.5, 0, 0])
+        far = np.array([[20.0, 0.0, 0.0]])                      # suelto pero lejos: se queda
+        pts = np.vstack((wall, dust, far))
+        noisy = isolated_mask(pts, voxel=0.25, min_points=2, max_range=8.0)
+        self.assertFalse(np.any(noisy[:len(wall)]))
+        self.assertTrue(np.all(noisy[len(wall):len(wall) + 5]))
+        self.assertFalse(noisy[-1])
+
+    def test_body_box(self):
+        pts = np.array([[0.3, 0.3, 0.0], [0.6, 0.0, 0.0], [0.0, 0.0, 0.5]])
+        keep = outside_box(pts, (-0.5, 0.5, -0.5, 0.5, -0.35, 0.4))
+        self.assertEqual(keep.tolist(), [False, True, True])
+
+    def test_self_hits_never_reach_sectors(self):
+        """Puntos en las hélices (a 0.45 m del centro, dentro de min_range no)
+        no llegan a los sectores: la caja del cuerpo los saca."""
+        mapper = WallMapper(MapperConfig(min_range=0.3, sectors_from_map=False))
+        mapper.set_home(0.0)
+        mount = SensorMount(position_frd=(0.05, 0.0, -0.12), axes='frd')
+        props = np.array([[0.32, 0.32, 0.1], [-0.32, 0.32, 0.1], [0.32, -0.32, 0.1],
+                          [-0.32, -0.32, 0.1]]) - mount.position_frd
+        e = np.linspace(-2, 2, 60)
+        wall = np.column_stack((np.full_like(e, 6.0), e, np.zeros_like(e)))
+        for k in range(3):
+            mapper.integrate_sensor(np.vstack((props, props * 1.01, wall)), mount,
+                                    (0.0, 0.0, -2.0), quat_from_yaw(0.0), 0.1 * k)
+        info = mapper.sector_info(0.25, (0.0, 0.0, -2.0))
+        self.assertGreater(float(np.min(info.ranges)), 5.0)
+        self.assertGreater(mapper.self_hits, 0)
 
 
 class HeightBandTest(unittest.TestCase):

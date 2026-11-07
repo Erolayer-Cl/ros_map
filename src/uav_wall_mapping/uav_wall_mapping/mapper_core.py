@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from uav_wall_mapping.cloud import isolated_mask, outside_box, voxel_downsample
 from uav_wall_mapping.geometry import body_to_world, yaw_from_quat
 from uav_wall_mapping.occupancy import OccupancyGrid2D, VoxelMap3D
 from uav_wall_mapping.sectors import INF, compute_sectors, free_ray_ends, merge_sectors
@@ -35,6 +36,15 @@ class MapperConfig:
     free_ray_neighbors: int = 3       # sectores vecinos que limitan el tallado de un sector vacío
     sensor_fov_deg: float = 360.0     # campo horizontal del sensor (87 para una RealSense)
     min_range: float = 0.5            # m: descarta impactos contra el propio dron
+    # Caja del propio dron en el marco del cuerpo FRD [xmin, xmax, ymin, ymax,
+    # zmin, zmax] (m): lo de adentro son hélices, patas, mástil... (z+ = abajo).
+    # Medir el dron y sumar ~5 cm. None = sin filtro (sólo min_range).
+    self_filter_box: tuple = (-0.5, 0.5, -0.5, 0.5, -0.35, 0.4)
+    # Ruido suelto (polvo, lluvia, insectos): puntos con menos de N en su
+    # vecindad de 3x3x3 vóxeles, hasta cierto alcance del sensor.
+    outlier_voxel: float = 0.25
+    outlier_min_points: int = 2       # 1 = sin filtro
+    outlier_max_range: float = 8.0
     max_range: float = 40.0           # m
     hit_logodds: float = 0.85
     miss_logodds: float = -0.4
@@ -47,7 +57,7 @@ class MapperConfig:
     sector_range: float = 15.0
     sector_band_below: float = 0.7    # m por debajo del dron que cuentan como choque
     sector_band_above: float = 0.7
-    sector_min_points: int = 1
+    sector_min_points: int = 2        # distancia del sector = la del k-ésimo punto (ruido suelto)
     sector_timeout: float = 0.4       # s desde la CAPTURA: una fuente más vieja no cuenta
     #                                   (PX4 Collision Prevention descarta a los 0.5 s)
     sector_store_margin: float = 0.5  # m extra de franja que se guarda por si el dron sube/baja
@@ -92,6 +102,8 @@ class WallMapper:
         # y no arrastran el corrimiento de una nube vieja.
         self._sources = {}
         self.starved_clouds = 0        # nubes (casi) vacías: sensor ciego
+        self.self_hits = 0             # puntos dentro de la caja del dron (acumulado)
+        self.outliers = 0              # puntos aislados descartados (acumulado)
         self.last_extract_sec = 0.0
 
     # ------------------------------------------------------------------
@@ -120,14 +132,33 @@ class WallMapper:
 
     # ------------------------------------------------------------------
     def integrate_sensor(self, points_sensor, mount, position_ned, q, stamp, source='lidar',
-                         min_points=None, min_cloud_points=None):
+                         min_points=None, min_cloud_points=None, downsample=0.0,
+                         filter_outliers=True):
         """Camino completo desde el marco del sensor: lo usan `mapper_node` y
         `closed_loop`, así los dos hacen exactamente lo mismo.
+
+        1. ruido suelto (antes de submuestrear, que si no lo esconde),
+        2. submuestreo por vóxel,
+        3. al marco del cuerpo y caja del propio dron,
+        4. al mundo con la pose de la captura.
 
         `position_ned` y `q` tienen que ser la pose del dron en `stamp` (el
         instante de captura), no la última recibida: ver `pose_buffer.py`.
         """
-        body = mount.to_body(points_sensor)
+        c = self.cfg
+        pts = np.asarray(points_sensor, dtype=float).reshape(-1, 3)
+        if filter_outliers and c.outlier_min_points > 1 and pts.shape[0]:
+            noisy = isolated_mask(pts, voxel=c.outlier_voxel, min_points=c.outlier_min_points,
+                                  max_range=c.outlier_max_range)
+            self.outliers += int(np.count_nonzero(noisy))
+            pts = pts[~noisy]
+        if downsample and downsample > 0.0:
+            pts = voxel_downsample(pts, downsample)
+        body = mount.to_body(pts)
+        if c.self_filter_box is not None and body.shape[0]:
+            keep = outside_box(body, c.self_filter_box)
+            self.self_hits += int(np.count_nonzero(~keep))
+            body = body[keep]
         world = body_to_world(body, position_ned, q)
         origin = mount.origin_world(position_ned, q)
         heading = yaw_from_quat(q) + mount.heading_offset()
@@ -241,7 +272,15 @@ class WallMapper:
         return (merged if merged is not None else np.full(c.sector_bins, INF)), newest
 
     def sector_info(self, now, drone_position):
-        """Sectores para la evasión: en vivo, memoria del mapa y su edad."""
+        """Sectores para la evasión: en vivo y con la memoria del mapa.
+
+        La memoria (celdas ocupadas de la grilla) sirve para no olvidar una
+        pared que salió del campo de visión, pero NO tiene que disparar una
+        huida de emergencia: un punto espurio queda en la grilla un par de
+        nubes después de que el sensor deja de verlo. Por eso se publica
+        también `live` (sólo fuentes en vivo) y la misión decide la emergencia
+        con eso.
+        """
         c = self.cfg
         live, newest = self.live_sectors(now, drone_position)
         ranges = live

@@ -58,7 +58,7 @@ from px4_msgs.msg import ObstacleDistance, VehicleAttitude, VehicleLocalPosition
 from uav_map_msgs.msg import ObstacleSectors, Wall as WallMsg, WallArray
 
 from uav_wall_mapping.cloud import (laserscan_to_xyz, pointcloud2_to_xyz, range_to_xyz,
-                                    voxel_downsample, xyz_to_pointcloud2_data)
+                                    xyz_to_pointcloud2_data)
 from uav_wall_mapping.export import WALL_COLORS, save_map_bundle
 from uav_wall_mapping.geometry import (SensorMount, ned_to_enu, px4_quat_to_enu_flu,
                                        yaw_from_quat)
@@ -115,6 +115,11 @@ class MapperNode(Node):
             free_ray_bins=p('map.free_ray_bins').value,
             sensor_fov_deg=p('map.sensor_fov_deg').value,
             min_range=p('map.min_range').value,
+            self_filter_box=(tuple(p('self_filter.box').value)
+                             if len(p('self_filter.box').value) == 6 else None),
+            outlier_voxel=p('outliers.voxel').value,
+            outlier_min_points=p('outliers.min_points').value,
+            outlier_max_range=p('outliers.max_range').value,
             max_range=p('map.max_range').value,
             voxel_resolution=p('map.voxel_resolution').value,
             sector_bins=72,
@@ -221,6 +226,13 @@ class MapperNode(Node):
         d('map.free_ray_bins', 360)
         d('map.sensor_fov_deg', 360.0)
         d('map.min_range', 0.5)
+        # Caja del propio dron, cuerpo FRD [xmin, xmax, ymin, ymax, zmin, zmax]
+        # (z+ abajo). Medir: hélices, patas, mástil. [] = sin filtro.
+        d('self_filter.box', [-0.5, 0.5, -0.5, 0.5, -0.35, 0.4])
+        # Ruido suelto: < min_points en la vecindad 3x3x3 de vóxeles de `voxel` m.
+        d('outliers.voxel', 0.25)
+        d('outliers.min_points', 2)          # 1 = sin filtro
+        d('outliers.max_range', 8.0)         # m desde el sensor
         d('map.max_range', 40.0)
         d('map.voxel_resolution', 0.2)
 
@@ -228,7 +240,7 @@ class MapperNode(Node):
         d('sectors.range', 15.0)
         d('sectors.band_below', 0.7)
         d('sectors.band_above', 0.7)
-        d('sectors.min_points', 1)
+        d('sectors.min_points', 2)            # distancia del sector = la del k-ésimo punto
         d('sectors.min_cloud_points', 20)    # menos puntos útiles = sensor ciego (no es dato fresco)
         d('sectors.sensor_timeout', 0.4)     # s desde la captura (PX4 CP: 0.5 s)
         d('sectors.from_map', True)
@@ -365,17 +377,25 @@ class MapperNode(Node):
         return pose[0], pose[1], self._now()
 
     def _integrate(self, source, mount, points_sensor, stamp, min_points=None,
-                   min_cloud_points=None):
+                   min_cloud_points=None, downsample=0.0, filter_outliers=True):
         found = self._pose_at(stamp)
         if found is None:
             return
         position, q, stamp = found
         with self.lock:
             before = self.mapper.starved_clouds
+            self_hits = self.mapper.self_hits
             self.mapper.integrate_sensor(points_sensor, mount, position, q, stamp,
                                          source=source, min_points=min_points,
-                                         min_cloud_points=min_cloud_points)
+                                         min_cloud_points=min_cloud_points,
+                                         downsample=downsample, filter_outliers=filter_outliers)
             starved = self.mapper.starved_clouds > before
+            self_hits = self.mapper.self_hits - self_hits
+        if self_hits > 0:
+            # En vuelo estable no debería haber casi ninguno: si hay muchos, la
+            # caja o el montaje (cloud.mount_*) están mal medidos.
+            self.get_logger().info(f'{source}: {self_hits} puntos dentro de la caja del dron '
+                                   '(self_filter.box) descartados', throttle_duration_sec=30.0)
         if starved:
             self.get_logger().warn(f'{source}: nube (casi) vacía: se trata como sensor ciego '
                                    '(no talla libre ni cuenta como dato fresco)',
@@ -397,8 +417,8 @@ class MapperNode(Node):
         except ValueError as exc:
             self.get_logger().error(f'{topic}: {exc}', throttle_duration_sec=5.0)
             return
-        pts = voxel_downsample(pts, self.get_parameter('cloud.downsample').value)
-        self._integrate(topic, mount, pts, self._header_time(msg.header, topic))
+        self._integrate(topic, mount, pts, self._header_time(msg.header, topic),
+                        downsample=self.get_parameter('cloud.downsample').value)
 
     def _on_scan(self, topic, mount, msg):
         pts = laserscan_to_xyz(msg.ranges, msg.angle_min, msg.angle_increment,
@@ -407,9 +427,10 @@ class MapperNode(Node):
 
     def _on_range(self, topic, mount, msg):
         pts = range_to_xyz(float(msg.range), float(msg.min_range), float(msg.max_range))
-        # Un rangefinder da un solo punto: con min_points > 1 nunca contaría.
+        # Un rangefinder da un solo punto: con min_points > 1 nunca contaría (y
+        # el filtro de puntos aislados lo tiraría).
         self._integrate(topic, mount, pts, self._header_time(msg.header, topic), min_points=1,
-                        min_cloud_points=0)
+                        min_cloud_points=0, filter_outliers=False)
 
     # ------------------------------------------------------------------
     # Publicación
@@ -438,6 +459,7 @@ class MapperNode(Node):
         msg.increment = 2.0 * math.pi / cfg.sector_bins
         msg.range_max = float(cfg.sector_range)
         msg.ranges = [float(r) for r in info.ranges]
+        msg.live_ranges = [float(r) for r in info.live]
         msg.position = Point(x=position[0], y=position[1], z=position[2])
         msg.band_below = float(cfg.sector_band_below)
         msg.band_above = float(cfg.sector_band_above)

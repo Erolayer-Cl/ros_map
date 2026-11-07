@@ -24,10 +24,14 @@ def sector_index(bearings, n_bins):
 
 
 def compute_sectors(points_rel_ne, n_bins=72, max_range=20.0, min_points=1):
-    """Distancia mínima por sector para puntos relativos al dron (N, 2).
+    """Distancia por sector para puntos relativos al dron (N, 2).
 
-    Devuelve `(ranges, counts)`; `ranges[i] = inf` si el sector está libre (o
-    tiene menos de `min_points` puntos, para filtrar ruido suelto).
+    Devuelve `(ranges, counts)`. Con `min_points` = k, la distancia de un
+    sector es la del k-ésimo punto más cercano (no la del primero): un retorno
+    suelto de polvo o un insecto delante de una pared no "acerca" la pared,
+    pero cualquier superficie real (que da varios puntos a casi la misma
+    distancia) cuenta igual. `ranges[i] = inf` si el sector tiene menos de k
+    puntos.
     """
     pts = np.asarray(points_rel_ne, dtype=float).reshape(-1, 2)
     ranges = np.full(n_bins, INF)
@@ -40,9 +44,16 @@ def compute_sectors(points_rel_ne, n_bins=72, max_range=20.0, min_points=1):
         return ranges, counts
     pts, dist = pts[keep], dist[keep]
     idx = sector_index(np.arctan2(pts[:, 1], pts[:, 0]), n_bins)
-    np.minimum.at(ranges, idx, dist)
     counts = np.bincount(idx, minlength=n_bins)
-    ranges[counts < min_points] = INF
+    k = max(1, int(min_points))
+    if k == 1:
+        np.minimum.at(ranges, idx, dist)
+        return ranges, counts
+    order = np.lexsort((dist, idx))            # por sector y, adentro, de menor a mayor
+    idx_sorted, dist_sorted = idx[order], dist[order]
+    starts = np.searchsorted(idx_sorted, np.arange(n_bins))
+    ok = counts >= k
+    ranges[ok] = dist_sorted[starts[ok] + k - 1]
     return ranges, counts
 
 

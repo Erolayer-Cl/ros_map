@@ -111,6 +111,69 @@ def range_to_xyz(distance, min_range, max_range):
     return np.array([[float(distance), 0.0, 0.0]])
 
 
+def outside_box(points, box):
+    """Máscara de los puntos (N, 3) que quedan FUERA de una caja alineada
+    `[xmin, xmax, ymin, ymax, zmin, zmax]` (en el marco en que estén los
+    puntos). Se usa en el marco del cuerpo para tirar los impactos contra el
+    propio dron: hélices, patas, tren, mástil del GPS, carga útil.
+    """
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    if box is None or len(box) != 6 or pts.shape[0] == 0:
+        return np.ones(pts.shape[0], dtype=bool)
+    lo = np.array([box[0], box[2], box[4]], dtype=float)
+    hi = np.array([box[1], box[3], box[5]], dtype=float)
+    inside = np.all((pts >= lo) & (pts <= hi), axis=1)
+    return ~inside
+
+
+# Desplazamientos de la vecindad 3x3x3 de un vóxel.
+_NEIGHBORS = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)],
+                      dtype=np.int64)
+_KEY_OFFSET = 1 << 20
+
+
+def _voxel_keys(idx):
+    idx = idx + _KEY_OFFSET
+    return (idx[:, 0] << 42) | (idx[:, 1] << 21) | idx[:, 2]
+
+
+def isolated_mask(points, voxel=0.25, min_points=2, max_range=8.0, origin=(0.0, 0.0, 0.0)):
+    """Máscara de puntos AISLADOS (ruido): con menos de `min_points` puntos
+    (contándose) en su vecindad de 3x3x3 vóxeles de `voxel` m.
+
+    Polvo, lluvia, insectos y reflejos dan retornos sueltos; una superficie
+    real da varios puntos juntos en la misma nube. Es el criterio de
+    PX4-Avoidance (`min_num_points_per_cell`) y del planificador de CMU (≥ 2
+    puntos), hecho con vóxeles para que sea lineal en numpy. Sólo se aplica a
+    menos de `max_range` del sensor: más lejos los puntos de una superficie ya
+    quedan separados por la resolución angular del lidar (y lejos no disparan
+    la evasión). Ojo: la nube de polvo densa SÍ pasa (Phillips et al. 2017: se
+    ve como una pared en el borde delantero); esto sólo saca lo suelto.
+    """
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    n = pts.shape[0]
+    if n == 0 or min_points <= 1 or voxel <= 0.0:
+        return np.zeros(n, dtype=bool)
+    near = np.linalg.norm(pts - np.asarray(origin, dtype=float).reshape(3), axis=1) <= max_range
+    if not np.any(near):
+        return np.zeros(n, dtype=bool)
+    idx = np.floor(pts / voxel).astype(np.int64)
+    keys, inverse, counts = np.unique(_voxel_keys(idx), return_inverse=True, return_counts=True)
+    inverse = inverse.reshape(-1)
+    # Para cada vóxel ocupado, la suma de puntos de sus 27 vecinos.
+    first = np.zeros(len(keys), dtype=np.int64)
+    first[inverse] = np.arange(n)
+    vox_idx = idx[first]
+    total = np.zeros(len(keys), dtype=np.int64)
+    for offset in _NEIGHBORS:
+        nk = _voxel_keys(vox_idx + offset)
+        pos = np.searchsorted(keys, nk)
+        pos = np.minimum(pos, len(keys) - 1)
+        hit = keys[pos] == nk
+        total += np.where(hit, counts[pos], 0)
+    return near & (total[inverse] < min_points)
+
+
 def voxel_downsample(points, size):
     """Un punto por vóxel de `size` metros (el primero). Baja la carga de CPU de
     la Jetson: un Mid-360 da 200 mil puntos/s y para el mapa alcanza con ~10%."""
