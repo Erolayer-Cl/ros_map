@@ -96,6 +96,10 @@ class OccupancyGrid2D:
         # sensor vio cada celda ocupada. Le dice al extractor de paredes de qué
         # lado de una pared está cada celda (ver walls.py).
         self.view = np.zeros((cells, cells, 2), dtype=np.float32)
+        # Para el olvido de lo efímero: cuántas nubes tuvieron un impacto en la
+        # celda (saturado) y cuándo fue el último.
+        self.hit_count = np.zeros((cells, cells), dtype=np.int16)
+        self.last_hit = np.full((cells, cells), -np.inf, dtype=np.float64)
         self.dropped_points = 0
 
     # ------------------------------------------------------------------
@@ -154,13 +158,16 @@ class OccupancyGrid2D:
         self.log_odds = np.pad(self.log_odds, ((top, bottom), (left, right)))
         self.known = np.pad(self.known, ((top, bottom), (left, right)))
         self.view = np.pad(self.view, ((top, bottom), (left, right), (0, 0)))
+        self.hit_count = np.pad(self.hit_count, ((top, bottom), (left, right)))
+        self.last_hit = np.pad(self.last_hit, ((top, bottom), (left, right)),
+                               constant_values=-np.inf)
         self.origin_n -= top * self.resolution
         self.origin_e -= left * self.resolution
 
     # ------------------------------------------------------------------
     # Actualización
     # ------------------------------------------------------------------
-    def update(self, sensor_ne, hits_ne, ray_ends_ne):
+    def update(self, sensor_ne, hits_ne, ray_ends_ne, stamp=None):
         """Integra una observación.
 
         `hits_ne`: puntos sólidos (N, 2) -> sus celdas suben hacia "ocupado".
@@ -203,6 +210,39 @@ class OccupancyGrid2D:
             lo = self.log_odds.reshape(-1)
             lo[hit_flat] = np.clip(lo[hit_flat] + self.hit, self.min_l, self.max_l)
             self.known.reshape(-1)[hit_flat] = True
+            counts = self.hit_count.reshape(-1)
+            counts[hit_flat] = np.minimum(counts[hit_flat] + 1, 30000)
+            if stamp is not None:
+                self.last_hit.reshape(-1)[hit_flat] = float(stamp)
+
+    def forget_transient(self, now, max_age, max_hits, center_ne=None, radius=None):
+        """Olvida (vuelve a desconocido) celdas ocupadas que se vieron pocas
+        veces (`hit_count` <= max_hits) y hace más de `max_age` s, a menos de
+        `radius` m de `center_ne` (donde el sensor las seguiría viendo si
+        estuvieran: una pared vista de pasada lejos no se toca).
+
+        Es lo que deja un obstáculo que se movió (una persona, una caja que la
+        empujaron) donde los rayos no llegan a vaciarlo: más allá de
+        `no_hit_free_range`, detrás de otra cosa o fuera del campo de una
+        cámara. Una pared se ve en cientos de nubes y no se toca. Como
+        `OA_DB_EXPIRE` de ArduPilot (10 s) y la edad máxima de PX4-Avoidance
+        (20 s), pero sólo para lo efímero, porque esto también es el plano que
+        se guarda. Devuelve cuántas celdas olvidó.
+        """
+        stale = (self.known & (self.log_odds >= self.occ_l) & (self.hit_count <= max_hits)
+                 & (self.last_hit < now - max_age))
+        if center_ne is not None and radius is not None:
+            rows = self.origin_n + (np.arange(self.shape[0]) + 0.5) * self.resolution - center_ne[0]
+            cols = self.origin_e + (np.arange(self.shape[1]) + 0.5) * self.resolution - center_ne[1]
+            stale &= (rows[:, None] ** 2 + cols[None, :] ** 2) <= radius * radius
+        n = int(np.count_nonzero(stale))
+        if n:
+            self.log_odds[stale] = 0.0
+            self.known[stale] = False
+            self.view[stale] = 0.0
+            self.hit_count[stale] = 0
+            self.last_hit[stale] = -np.inf
+        return n
 
     def _flat_in_bounds(self, points_ne, count_dropped=False):
         if points_ne.shape[0] == 0:
@@ -274,6 +314,8 @@ class OccupancyGrid2D:
         self.log_odds[:] = 0.0
         self.known[:] = False
         self.view[:] = 0.0
+        self.hit_count[:] = 0
+        self.last_hit[:] = -np.inf
         self.dropped_points = 0
 
 
@@ -294,7 +336,7 @@ class VoxelMap3D:
     def __init__(self, resolution=0.2, max_voxels=2_000_000):
         self.resolution = float(resolution)
         self.max_voxels = int(max_voxels)
-        self.table = {}          # clave -> [impactos, Σn, Σe, Σd, Σvista_n, Σvista_e]
+        self.table = {}          # clave -> [impactos, Σn, Σe, Σd, Σvista_n, Σvista_e, último]
         self.full_warned = False
 
     def _keys(self, points):
@@ -302,7 +344,7 @@ class VoxelMap3D:
         idx += self._OFFSET
         return (idx[:, 0] << 42) | (idx[:, 1] << 21) | idx[:, 2]
 
-    def insert(self, points_ned, sensor_origin=None):
+    def insert(self, points_ned, sensor_origin=None, stamp=0.0):
         """Suma impactos. Con `sensor_origin` también acumula desde qué lado
         (dirección horizontal sensor->punto) se vio cada vóxel."""
         pts = np.asarray(points_ned, dtype=float).reshape(-1, 3)
@@ -317,14 +359,16 @@ class VoxelMap3D:
             units = rel / np.maximum(np.hypot(rel[:, 0], rel[:, 1]), 1e-6)[:, None]
             np.add.at(data[:, 3:5], inverse, units)
         table = self.table
+        stamp = float(stamp)
         for key, count, row in zip(keys.tolist(), counts.tolist(), data.tolist()):
             entry = table.get(key)
             if entry is not None:
                 entry[0] += count
                 for i in range(5):
                     entry[i + 1] += row[i]
+                entry[6] = stamp
             elif len(table) < self.max_voxels:
-                table[key] = [count] + row
+                table[key] = [count] + row + [stamp]
             else:
                 self.full_warned = True
 
@@ -335,7 +379,7 @@ class VoxelMap3D:
             empty = np.zeros((0, 3))
             return (empty, np.zeros((0, 2))) if with_views else empty
         data = np.array(list(self.table.values()), dtype=float)
-        data = data[data[:, 0] >= min_hits]
+        data = data[data[:, 0] >= min_hits, :6]
         means = data[:, 1:4] / data[:, 0:1]
         if not with_views:
             return means
@@ -343,6 +387,18 @@ class VoxelMap3D:
         norm = np.hypot(view[:, 0], view[:, 1])
         units = np.where(norm[:, None] > 1e-3, view / np.maximum(norm, 1e-6)[:, None], 0.0)
         return means, units
+
+    def forget_transient(self, now, max_age, max_hits, center=None, radius=None):
+        """Como en la grilla: borra vóxeles con pocos impactos no vistos hace
+        más de `max_age` s (el 3D no tiene tallado de espacio libre, así que
+        sin esto un objeto que se movió quedaba para siempre)."""
+        limit = now - max_age
+        stale = [k for k, v in self.table.items() if v[0] <= max_hits and v[6] < limit
+                 and (center is None or (v[1] / v[0] - center[0]) ** 2
+                      + (v[2] / v[0] - center[1]) ** 2 <= radius * radius)]
+        for key in stale:
+            del self.table[key]
+        return len(stale)
 
     def __len__(self):
         return len(self.table)

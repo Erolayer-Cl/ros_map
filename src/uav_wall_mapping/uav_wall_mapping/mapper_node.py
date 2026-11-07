@@ -130,6 +130,8 @@ class MapperNode(Node):
             sector_timeout=p('sectors.sensor_timeout').value,
             min_cloud_points=p('sectors.min_cloud_points').value,
             sectors_from_map=p('sectors.from_map').value,
+            forget_after=p('map.forget_after').value,
+            forget_max_hits=p('map.forget_max_hits').value,
             walls={k: p(f'walls.{k}').value for k in WALL_PARAMS},
         )
         self.mapper = WallMapper(cfg)
@@ -235,6 +237,10 @@ class MapperNode(Node):
         d('outliers.max_range', 8.0)         # m desde el sensor
         d('map.max_range', 40.0)
         d('map.voxel_resolution', 0.2)
+        # Olvido de lo efímero: celdas/vóxeles vistos en pocas nubes y no
+        # vueltos a ver en este tiempo (obstáculos que se movieron).
+        d('map.forget_after', 0.0)           # s (10 = OA_DB_EXPIRE de ArduPilot); 0 = nunca
+        d('map.forget_max_hits', 10)
 
         d('sectors.rate', 10.0)
         d('sectors.range', 15.0)

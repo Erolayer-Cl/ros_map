@@ -64,6 +64,11 @@ class MapperConfig:
     min_cloud_points: int = 20        # una nube con menos puntos útiles es un sensor ciego:
     #                                   no talla libre "donde no chocó" ni cuenta como dato fresco
     sectors_from_map: bool = True     # sumar lo que ya está en el mapa (memoria)
+    # --- olvido de lo efímero (obstáculos que se movieron) ---
+    forget_after: float = 0.0         # s sin verse (ArduPilot OA_DB_EXPIRE = 10 s); 0 = nunca
+    forget_max_hits: int = 10         # sólo celdas/vóxeles vistos en <= N nubes (~1 s a 10 Hz)
+    forget_period: float = 1.0        # s entre pasadas
+    forget_radius: float = 10.0       # m alrededor del dron (donde el sensor lo seguiría viendo)
     # --- paredes ---
     walls: dict = field(default_factory=dict)   # kwargs para WallExtractor
     trajectory_step: float = 0.3      # m entre puntos guardados de la trayectoria
@@ -109,6 +114,8 @@ class WallMapper:
         self._seen = np.full(self.cfg.sector_bins, -math.inf)
         self.starved_clouds = 0        # nubes (casi) vacías: sensor ciego
         self.self_hits = 0             # puntos dentro de la caja del dron (acumulado)
+        self.forgotten = 0             # celdas olvidadas por efímeras (acumulado)
+        self._last_forget = -math.inf
         self.outliers = 0              # puntos aislados descartados (acumulado)
         self.last_extract_sec = 0.0
 
@@ -127,6 +134,7 @@ class WallMapper:
         self.clouds_integrated = 0
         self.points_integrated = 0
         self._sources.clear()
+        self._last_forget = -math.inf
         self._seen[:] = -math.inf
 
     def update_trajectory(self, position_ned):
@@ -229,8 +237,16 @@ class WallMapper:
                              no_hit_range=0.0 if starved else c.no_hit_free_range,
                              fov_center=sensor_heading, fov=fov,
                              max_range=c.max_range, neighbor_bins=c.free_ray_neighbors)
-        self.grid.update(origin[:2], hits_ne, ends)
-        self.voxels.insert(pts[heights >= c.voxel_min_height], sensor_origin=origin)
+        self.grid.update(origin[:2], hits_ne, ends, stamp=float(stamp))
+        self.voxels.insert(pts[heights >= c.voxel_min_height], sensor_origin=origin,
+                           stamp=float(stamp))
+        if c.forget_after > 0.0 and float(stamp) - self._last_forget >= c.forget_period:
+            self._last_forget = float(stamp)
+            self.forgotten += self.grid.forget_transient(float(stamp), c.forget_after,
+                                                         c.forget_max_hits, drone[:2],
+                                                         c.forget_radius)
+            self.voxels.forget_transient(float(stamp), c.forget_after, c.forget_max_hits,
+                                         drone[:2], c.forget_radius)
 
         keep = ((heights >= max(c.min_height, drone_h - c.sector_band_below - c.sector_store_margin))
                 & (heights <= drone_h + c.sector_band_above + c.sector_store_margin))

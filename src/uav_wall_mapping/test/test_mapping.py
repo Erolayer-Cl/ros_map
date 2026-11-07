@@ -244,6 +244,35 @@ class SeenSectorsTest(unittest.TestCase):
         self.assertEqual(distances, [150, 2001, 65535])
 
 
+class ForgetTest(unittest.TestCase):
+
+    def box_points(self, north, east):
+        n, e, z = np.meshgrid(np.linspace(north - 0.3, north + 0.3, 6),
+                              np.linspace(east - 0.3, east + 0.3, 6), np.linspace(-1.5, -2.5, 4))
+        return np.column_stack((n.ravel(), e.ravel(), z.ravel()))
+
+    def test_transient_obstacle_is_forgotten_but_wall_is_not(self):
+        cfg = MapperConfig(forget_after=5.0, forget_max_hits=15, no_hit_free_range=0.0)
+        mapper = WallMapper(cfg)
+        mapper.set_home(0.0)
+        e = np.linspace(-3, 3, 100)
+        wall = np.vstack([np.column_stack((np.full_like(e, 8.0), e, np.full_like(e, -h)))
+                          for h in (1.5, 2.0, 2.5)])
+        t = 0.0
+        for k in range(5):                     # caja vista 5 nubes en (4, -5)
+            mapper.integrate(np.vstack((wall, self.box_points(4.0, -5.0))), (0, 0, -2.0),
+                             (0, 0, -2.0), stamp=t)
+            t += 0.1
+        self.assertGreaterEqual(mapper.snapshot().value_at(4.0, -5.0), 65)
+        while t < 7.0:                         # se fue; la pared se sigue viendo
+            mapper.integrate(wall, (0, 0, -2.0), (0, 0, -2.0), stamp=t)
+            t += 0.1
+        snap = mapper.snapshot()
+        self.assertLess(snap.value_at(4.0, -5.0), 0)          # desconocido otra vez
+        self.assertGreaterEqual(snap.value_at(8.05, 0.0), 65)  # la pared sigue
+        self.assertGreater(mapper.forgotten, 0)
+
+
 class HeightBandTest(unittest.TestCase):
 
     def test_ceiling_is_not_a_2d_obstacle(self):
