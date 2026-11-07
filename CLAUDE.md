@@ -79,6 +79,13 @@ Después de cambiar un `.msg`: `rm -rf build/uav_map_msgs install/uav_map_msgs`.
   - El A* mide la distancia en la grilla fina; en la gruesa las puertas < 2.4 m
     no pasaban.
   - Sectores no vistos van a PX4 como UINT16_MAX, nunca como libres.
+  - Los rayos "sin eco" (sectores vacíos tallados hasta `no_hit_free_range`)
+    son evidencia débil: no vacían celdas con impactos en los últimos
+    `weak_protect_sec` (2 s). Sin esto un cable fino visto de vez en cuando se
+    borraba entre detecciones y el dron chocaba (QA 1d); protegerlas para
+    siempre deja fantasmas de lo que se mueve (QA 7a/7c/7d).
+  - No agregar histéresis al debounce del desvío: se probó para el cable y
+    produjo un choque con ráfagas (QA 6e).
 
 ## Trabajo en curso: evasión para entornos reales
 
@@ -93,12 +100,19 @@ Estado:
   reportes están en `docs/investigacion/` (01 planificadores, 02 autopilotos y
   entorno real, 03 brechas); el arnés de QA quedó en el scratchpad de la sesión
   (`qa/harness/run_all.py --repo <ruta>`), no en el repo.
-- Ola 2 (hecha en la rama del worktree `worktree-agent-a8e8f2f339dc0c66f`):
-  frenado físico, tiempos (historial de poses + edad del dato), franja relativa
-  al dron, filtros de auto-impactos y ruido, sectores vistos/scaleToFOV,
-  failsafes, mapper sin bloqueo, simulación de entorno real (5 escenarios
-  nuevos), puertas de 2 m, y `docs/evasion-entornos-reales.md`.
-- Pendiente: integrar la rama, QA final, probar con ROS 2 real / Unreal / vuelo.
+- Ola 2 (hecha e integrada en la rama): frenado físico, tiempos (historial de
+  poses + edad del dato), franja relativa al dron, filtros de auto-impactos y
+  ruido, sectores vistos/scaleToFOV, failsafes, mapper sin bloqueo, simulación
+  de entorno real (5 escenarios nuevos), puertas de 2 m, rayos sin eco como
+  evidencia débil, y `docs/evasion-entornos-reales.md`.
+- Revisión con pruebas: `TODOS=1 ./run_tests.sh` OK (79 unitarias + 14
+  escenarios). Arnés QA de 65 casos: 60 sin falla y 0 choques (versión
+  original: 39 sin falla y 5 choques). Siguen fallando: puertas de 1.2-1.5 m
+  (2a/2b/2f; ancho mínimo de paso ≈ 2 m), caja que se detiene y se va (7b,
+  mapa con fantasma; el olvido `map.forget_after` está apagado porque borra
+  celdas reales) y mapeo con cámara en la habitación (9c, ciclo entre
+  fronteras).
+- Pendiente: probar con ROS 2 real / Unreal / vuelo.
   Lo no cubierto (vidrio, cables, deskew por punto → FAST-LIO2, evasión
   vertical, batería, predicción de dinámicos, mapeo con cámara: livelock entre
   fronteras en QA 9c) está en docs/evasion-entornos-reales.md §4.
