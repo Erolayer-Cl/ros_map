@@ -73,6 +73,43 @@ class AvoidanceTest(unittest.TestCase):
         cmd = VfhAvoider(AvoidConfig(escape_speed=0.75)).update(ranges, 0.0, 10.0, 0.0)
         self.assertAlmostEqual(cmd.max_speed, 0.75)
 
+    def test_escape_only_towards_seen_sectors(self):
+        """Cámara mirando al norte, algo pegado al norte: atrás nunca se vio,
+        así que no se retrocede a ciegas: se frena en el lugar."""
+        ranges = free_sectors()
+        ranges[0] = 0.6
+        seen = np.zeros(72, dtype=bool)
+        seen[63:72] = True
+        seen[0:10] = True
+        cmd = self.avoider.update(ranges, 0.0, 10.0, 0.0, seen=seen)
+        self.assertTrue(cmd.emergency)
+        self.assertIsNone(cmd.direction)
+        self.assertEqual(cmd.max_speed, 0.0)
+        # Con lidar 360° (todo visto) sí se aleja hacia el sur.
+        cmd = VfhAvoider(AvoidConfig()).update(ranges, 0.0, 10.0, 0.0)
+        self.assertAlmostEqual(abs(cmd.direction), math.pi, delta=0.1)
+
+    def test_escape_avoids_wall_behind(self):
+        ranges = free_sectors()
+        ranges[0] = 0.6               # algo al norte
+        ranges[33:40] = 1.0           # y una pared al sur
+        cmd = self.avoider.update(ranges, 0.0, 10.0, 0.0)
+        self.assertTrue(cmd.emergency)
+        self.assertIsNotNone(cmd.direction)
+        self.assertGreater(abs(math.degrees(cmd.direction)), 30)
+        self.assertLess(abs(math.degrees(cmd.direction)), 150)
+
+    def test_deviation_only_towards_seen(self):
+        ranges = free_sectors()
+        ranges[66:72] = 2.5
+        ranges[0:7] = 2.5
+        seen = np.zeros(72, dtype=bool)
+        seen[60:72] = True
+        seen[0:12] = True             # la cámara ve ±60°, la pared tapa ±35°
+        cmd = self.avoider.update(ranges, 0.0, 10.0, 0.0, seen=seen)
+        self.assertTrue(cmd.deviated)
+        self.assertLessEqual(abs(math.degrees(cmd.direction)), 60)
+
     def test_surrounded_is_blocked(self):
         cmd = self.avoider.update(np.full(72, 1.5), 0.0, 10.0, 0.0)
         self.assertTrue(cmd.blocked)

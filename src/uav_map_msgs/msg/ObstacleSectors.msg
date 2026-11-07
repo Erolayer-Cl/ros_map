@@ -17,6 +17,10 @@ float32[] ranges           # distancia horizontal desde el centro del dron; inf 
 float32[] live_ranges      # lo mismo pero SÓLO sensores en vivo, sin memoria del mapa:
 #                            la emergencia ("alejarse") se decide con esto, para que un
 #                            punto espurio que quedó en la grilla no la dispare
+float32[] seen_age         # s entre la última vez que un sensor en vivo tuvo el sector
+#                            en su campo y header.stamp (inf = nunca). Un sector "libre"
+#                            que nadie mira (fuera de una cámara) es desconocido: la
+#                            evasión no se desvía ni huye hacia él
 geometry_msgs/Point position   # posición NED del dron al calcularlos
 float32 band_below         # franja de alturas considerada, relativa al dron (m)
 float32 band_above

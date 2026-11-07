@@ -95,6 +95,8 @@ DEFAULTS = {
     'avoid.stop_distance': 1.3,         # m desde el centro: frenado del todo
     'avoid.emergency_distance': 0.7,    # < radio + margen: si no, bordear dispara la huida
     'avoid.escape_speed': 0.75,         # m/s al alejarse (ArduPilot AVOID_BACKUP_SPD)
+    'avoid.seen_timeout': 1.0,          # s: un sector no mirado en este tiempo es desconocido
+    'avoid.fov_check_deg': 20.0,        # ± grados alrededor del avance que tienen que estar vistos
     'avoid.max_decel': 1.0,             # m/s² supuestos para frenar (ArduPilot: ≤ 1)
     'avoid.latency': 0.4,               # s sensor→frenado, sin la edad del dato (PX4 CP_DELAY)
     'avoid.trigger_hold': 0.2,          # s que el desvío tiene que persistir
@@ -153,6 +155,8 @@ class MissionCore:
         self._sectors_ever = False
         self._sectors_range = math.inf
         self._sectors_live = None
+        self._sectors_seen_age = None
+        self._fov_scale = 1.0
         self.snapshot = None
         self.walls_summary = (0, 0, 0)
 
@@ -289,14 +293,18 @@ class MissionCore:
                 and self.state != State.ARMING and not self._land_requested):
             self._enter(State.PREEMPTED, 'el dron salió de OFFBOARD desde afuera: control cedido')
 
-    def update_sectors(self, ranges, stamp, range_max=math.inf, live=None):
+    def update_sectors(self, ranges, stamp, range_max=math.inf, live=None, seen_age=None):
         """Sectores de obstáculos. `stamp`: instante de CAPTURA del dato más
         nuevo que los formó (no el de llegada): con eso se sabe su edad.
         `live`: los mismos sectores sólo con sensores en vivo (sin la memoria
-        del mapa); la emergencia se decide con ellos."""
+        del mapa); la emergencia se decide con ellos. `seen_age`: por sector,
+        s entre la última vez que un sensor lo miró y `stamp` (inf = nunca)."""
         self._sectors = np.asarray(ranges, dtype=float)
         self._sectors_live = (np.asarray(live, dtype=float)
                               if live is not None and len(live) == len(self._sectors) else None)
+        self._sectors_seen_age = (np.asarray(seen_age, dtype=float)
+                                  if seen_age is not None and len(seen_age) == len(self._sectors)
+                                  else None)
         self._sectors_stamp = float(stamp)
         self._sectors_ever = True
         self._sectors_range = float(range_max) if range_max and range_max > 0 else math.inf
@@ -318,6 +326,28 @@ class MissionCore:
 
     def _sectors_age(self, now):
         return max(0.0, now - self._sectors_stamp) if self._sectors is not None else math.inf
+
+    def _seen_mask(self, now):
+        """Sectores que un sensor miró hace menos de `avoid.seen_timeout` s
+        (None = no se sabe: se asumen todos vistos, como antes)."""
+        if self._sectors_seen_age is None:
+            return None
+        age = self._sectors_seen_age + self._sectors_age(now)
+        return age <= float(self.p('avoid.seen_timeout'))
+
+    def _fov_factor(self, seen, direction):
+        """Como `scaleToFOV` de PX4-Avoidance: la fracción de los sectores
+        alrededor del avance que se están viendo. 0 = avanzar a ciegas: no se
+        avanza, se gira hasta tenerlo en el campo del sensor."""
+        if seen is None:
+            return 1.0
+        n = len(seen)
+        centers = np.arange(n) * (2.0 * math.pi / n)
+        diff = np.abs(np.arctan2(np.sin(centers - direction), np.cos(centers - direction)))
+        window = diff <= math.radians(float(self.p('avoid.fov_check_deg')))
+        if not np.any(window):
+            return 1.0
+        return float(np.count_nonzero(seen[window])) / float(np.count_nonzero(window))
 
     # ------------------------------------------------------------------
     # Servicios
@@ -795,6 +825,7 @@ class MissionCore:
         self._avoid_reason = ''
         cruise = self._ramped_speed(now)
         cap = math.inf
+        self._fov_scale = 1.0
 
         if self.p('avoid.enabled'):
             if self._sectors_fresh(now):
@@ -804,14 +835,21 @@ class MissionCore:
                 # la mayor (con viento de cola o zanahoria adelantada, la real
                 # supera a la pedida).
                 speed_ref = max(math.hypot(self.velocity[0], self.velocity[1]), cruise)
+                seen = self._seen_mask(now)
                 cmd = self.avoider.update(self._sectors, desired, dist, self.heading,
                                           speed=speed_ref, data_age=age,
                                           sensor_range=self._sectors_range,
-                                          live_ranges=self._sectors_live)
+                                          live_ranges=self._sectors_live, seen=seen)
                 self._nearest, self._nearest_bearing = cmd.nearest, cmd.nearest_bearing
                 direction, scale, hold = self._apply_avoidance(cmd, desired, now)
                 if hold:
                     self._freeze()
+                    if cmd.unseen:
+                        # Con un sensor de campo limitado lo libre puede estar
+                        # fuera de la vista: girar en el lugar hacia el objetivo
+                        # (y más allá) hasta verlo, en vez de esperar quieto.
+                        self._update_yaw(wrap_pi(self._yaw_sp + math.pi / 2.0), goal, 0.0,
+                                         force=True)
                     return
                 if cmd.emergency:
                     # Alejarse a velocidad fija (no una fracción del crucero: con
@@ -823,6 +861,12 @@ class MissionCore:
                     # (durante el debounce puede no ser la que propuso el VFH).
                     self._ahead, cap = self.avoider.limit_for(
                         self._sectors, direction, age, self._sectors_range)
+                    self._fov_scale = self._fov_factor(seen, direction)
+                    if self._fov_scale < 1.0:
+                        cap = min(cap, cruise * self._fov_scale)
+                        if self._fov_scale <= 0.0:
+                            self._avoid_active = True
+                            self._avoid_reason = 'girando para mirar hacia donde va antes de avanzar'
             elif self._sectors_ever and self.p('avoid.hold_on_sensor_loss'):
                 if not self._sensor_loss_warned:
                     self.log('warn', 'se cortaron los datos de obstáculos: frenando en el lugar')
@@ -845,7 +889,7 @@ class MissionCore:
         self._advance_carrot(direction, speed, stop_at)
         if self.p('nav.velocity_feedforward'):
             self.velocity_setpoint = (math.cos(direction) * speed, math.sin(direction) * speed)
-        self._update_yaw(direction, goal, speed)
+        self._update_yaw(direction, goal, speed, force=self._fov_scale < 1.0)
 
         if self._avoid_active and self.state == State.NAVIGATE:
             self._enter(State.AVOID, self._avoid_reason)
@@ -867,6 +911,9 @@ class MissionCore:
             if now - self._emergency_since >= self.p('avoid.emergency_hold'):
                 self._avoid_active = True
                 self._avoid_reason = cmd.reason
+                if cmd.direction is None:
+                    # Ninguna salida vista: frenar en el lugar (no retroceder a ciegas).
+                    return desired, 0.0, True
                 return cmd.direction, cmd.speed_scale, False
             return desired, 0.0, True
         self._emergency_since = None
@@ -915,14 +962,16 @@ class MissionCore:
         low = min(0.3, cruise)
         return low + (cruise - low) * elapsed / ramp
 
-    def _update_yaw(self, direction, goal, speed):
+    def _update_yaw(self, direction, goal, speed, force=False):
+        """`force`: mirar hacia el avance aunque esté quieto (el sensor de campo
+        limitado no ve hacia donde hay que ir: primero girar)."""
         mode = self.p('nav.yaw_mode')
-        if mode == 'fixed':
+        if mode == 'fixed' and not force:
             return
-        if mode == 'goal':
+        if mode == 'goal' and not force:
             desired = bearing_between(self.position, goal)
         else:
-            if speed < 0.2:
+            if speed < 0.2 and not force:
                 return
             desired = direction
         max_step = float(self.p('nav.max_yaw_rate')) * self._dt

@@ -377,7 +377,7 @@ class MapperNode(Node):
         return pose[0], pose[1], self._now()
 
     def _integrate(self, source, mount, points_sensor, stamp, min_points=None,
-                   min_cloud_points=None, downsample=0.0, filter_outliers=True):
+                   min_cloud_points=None, downsample=0.0, filter_outliers=True, fov_deg=None):
         found = self._pose_at(stamp)
         if found is None:
             return
@@ -388,7 +388,8 @@ class MapperNode(Node):
             self.mapper.integrate_sensor(points_sensor, mount, position, q, stamp,
                                          source=source, min_points=min_points,
                                          min_cloud_points=min_cloud_points,
-                                         downsample=downsample, filter_outliers=filter_outliers)
+                                         downsample=downsample, filter_outliers=filter_outliers,
+                                         fov_deg=fov_deg)
             starved = self.mapper.starved_clouds > before
             self_hits = self.mapper.self_hits - self_hits
         if self_hits > 0:
@@ -429,8 +430,9 @@ class MapperNode(Node):
         pts = range_to_xyz(float(msg.range), float(msg.min_range), float(msg.max_range))
         # Un rangefinder da un solo punto: con min_points > 1 nunca contaría (y
         # el filtro de puntos aislados lo tiraría).
+        fov = math.degrees(float(msg.field_of_view)) if msg.field_of_view > 0.0 else 5.0
         self._integrate(topic, mount, pts, self._header_time(msg.header, topic), min_points=1,
-                        min_cloud_points=0, filter_outliers=False)
+                        min_cloud_points=0, filter_outliers=False, fov_deg=fov)
 
     # ------------------------------------------------------------------
     # Publicación
@@ -460,6 +462,7 @@ class MapperNode(Node):
         msg.range_max = float(cfg.sector_range)
         msg.ranges = [float(r) for r in info.ranges]
         msg.live_ranges = [float(r) for r in info.live]
+        msg.seen_age = [float(a) for a in info.seen_age]
         msg.position = Point(x=position[0], y=position[1], z=position[2])
         msg.band_below = float(cfg.sector_band_below)
         msg.band_above = float(cfg.sector_band_above)
@@ -470,7 +473,7 @@ class MapperNode(Node):
             self.pub_sectors.publish(msg)
             self._publish_scan(info.ranges, position)
             if self.pub_px4_obstacles is not None:
-                self._publish_px4_obstacles(info.ranges)
+                self._publish_px4_obstacles(info)
         if self.tf_broadcaster is not None:
             self._publish_tf(position, q)
 
@@ -497,13 +500,22 @@ class MapperNode(Node):
         scan.ranges = out
         self.pub_scan.publish(scan)
 
-    def _publish_px4_obstacles(self, ranges):
+    def _publish_px4_obstacles(self, info):
         msg = ObstacleDistance()
-        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        # Instante de CAPTURA (no de publicación): PX4 descuenta la edad del dato
+        # en el frenado (CollisionPrevention: delay_distance += v·edad). Con
+        # timestamp = 0 PX4 pondría "ahora" y ocultaría la latencia. Requiere
+        # UXRCE_DDS_SYNCT=1 para que la base de tiempo coincida.
+        msg.timestamp = int(info.stamp * 1e6) if info.fresh else \
+            int(self.get_clock().now().nanoseconds / 1000)
         msg.frame = ObstacleDistance.MAV_FRAME_LOCAL_NED
         msg.sensor_type = ObstacleDistance.MAV_DISTANCE_SENSOR_LASER
-        msg.distances = to_px4_obstacle_distance(ranges, self.mapper.cfg.sector_range,
-                                                 self.mapper.cfg.min_range)
+        # Sectores que ningún sensor miró hace poco = UINT16_MAX (desconocido):
+        # con CP_GO_NO_DATA = 0 PX4 no deja moverse hacia ellos. Antes se
+        # mandaban como libres (max_distance + 1).
+        unknown = np.asarray(info.seen_age) > self.mapper.cfg.sector_timeout
+        msg.distances = to_px4_obstacle_distance(info.ranges, self.mapper.cfg.sector_range,
+                                                 self.mapper.cfg.min_range, unknown_mask=unknown)
         msg.increment = 5.0
         msg.min_distance = int(self.mapper.cfg.min_range * 100)
         msg.max_distance = int(self.mapper.cfg.sector_range * 100)

@@ -96,6 +96,7 @@ class AvoidCommand:
     block_range: float = 0.0   # m hasta donde un obstáculo tapa sectores
     deviated: bool = False     # True si no se va derecho al objetivo
     blocked: bool = False      # ningún sector libre
+    unseen: bool = False       # bloqueado sólo porque lo libre no se está viendo: girar
     emergency: bool = False    # algo demasiado cerca: alejarse
     nearest: float = INF       # distancia mínima en cualquier dirección
     nearest_bearing: float = 0.0
@@ -140,6 +141,45 @@ class VfhAvoider:
         diff = np.abs(np.arctan2(np.sin(self.centers - bearing), np.cos(self.centers - bearing)))
         window = np.asarray(ranges)[diff <= half_width]
         return float(window.min()) if window.size else INF
+
+    def _escape(self, cmd, ranges, live, idx, seen):
+        """Huida de emergencia hacia el sector visto más opuesto al obstáculo
+        que se aleje de verdad (el cono de ±25° alrededor tiene que estar más
+        libre que la distancia actual). Sin ninguno: frenar en el lugar, que
+        retroceder a ciegas (cámara de 87°) es peor que quedarse quieto."""
+        c = self.cfg
+        cmd.emergency = True
+        cmd.deviated = True
+        cmd.nearest_bearing = float(self.centers[idx])
+        cmd.nearest = float(live[idx])
+        away = wrap_pi(cmd.nearest_bearing + math.pi)
+        need = max(cmd.nearest + 0.3, c.emergency_distance + 0.4)
+        best, best_cost = None, INF
+        for i in np.nonzero(seen)[0]:
+            b = float(self.centers[i])
+            # Nunca con componente hacia el obstáculo (>= 90° de él), y con el
+            # cono de esa dirección más libre que lo que se tiene encima.
+            if angle_diff(b, cmd.nearest_bearing) < math.pi / 2.0 or \
+                    self.clearance(ranges, b) <= need:
+                continue
+            cost = angle_diff(b, away)
+            if cost < best_cost:
+                best, best_cost = b, cost
+        if best is None:
+            cmd.direction = None
+            cmd.blocked = True
+            cmd.max_speed = 0.0
+            cmd.reason = (f'obstáculo a {cmd.nearest:.1f} m '
+                          f'({math.degrees(cmd.nearest_bearing):.0f}°) y ninguna salida vista: '
+                          'frenando en el lugar')
+            self._previous = None
+            return cmd
+        cmd.direction = wrap_pi(best)
+        cmd.max_speed = c.escape_speed
+        cmd.reason = (f'obstáculo a {cmd.nearest:.1f} m '
+                      f'({math.degrees(cmd.nearest_bearing):.0f}°): alejándose')
+        self._previous = cmd.direction
+        return cmd
 
     def keep_distance(self):
         """Distancia (desde el centro del dron) a la que tiene que quedar frenado."""
@@ -189,7 +229,7 @@ class VfhAvoider:
         return travel, max_safe_speed(travel, c.max_decel, delay)
 
     def update(self, ranges, goal_bearing, goal_distance, heading, speed=0.0, data_age=0.0,
-               sensor_range=INF, live_ranges=None):
+               sensor_range=INF, live_ranges=None, seen=None):
         """Decide la dirección y el tope de velocidad del próximo ciclo.
 
         `speed`: velocidad horizontal actual o pedida, la mayor (m/s): define
@@ -199,6 +239,8 @@ class VfhAvoider:
         libre sólo hasta ahí (más allá no se sabe). `live_ranges`: sectores
         sólo de los sensores en vivo; si vienen, la emergencia se decide con
         ellos (la memoria del mapa frena y desvía, pero no hace huir).
+        `seen`: máscara de sectores que un sensor miró hace poco; los desvíos
+        y la huida sólo van hacia ésos (un sector sin datos no es libre).
         """
         c = self.cfg
         ranges = np.asarray(ranges, dtype=float)
@@ -207,20 +249,14 @@ class VfhAvoider:
         nearest = float(ranges[nearest_idx])
         cmd = AvoidCommand(nearest=nearest, nearest_bearing=float(self.centers[nearest_idx]))
 
+        seen = (np.ones(self.n_bins, dtype=bool) if seen is None
+                else np.asarray(seen, dtype=bool).reshape(self.n_bins))
         live = ranges if live_ranges is None else np.asarray(live_ranges, dtype=float)
         live_idx = int(np.argmin(live))
         if float(live[live_idx]) < c.emergency_distance:
-            # Demasiado cerca (y lo confirma el sensor en vivo): alejarse.
-            cmd.emergency = True
-            cmd.nearest_bearing = float(self.centers[live_idx])
-            cmd.nearest = float(live[live_idx])
-            cmd.direction = wrap_pi(cmd.nearest_bearing + math.pi)
-            cmd.max_speed = c.escape_speed
-            cmd.deviated = True
-            cmd.reason = (f'obstáculo a {cmd.nearest:.1f} m '
-                          f'({math.degrees(cmd.nearest_bearing):.0f}°): alejándose')
-            self._previous = cmd.direction
-            return cmd
+            # Demasiado cerca (y lo confirma el sensor en vivo): alejarse, pero
+            # sólo hacia un sector visto y más libre que lo que se tiene encima.
+            return self._escape(cmd, ranges, live, live_idx, seen)
 
         # Hasta dónde mirar: nunca menos que lo que se tarda en frenar a la
         # velocidad actual (con la latencia), más la distancia a mantener.
@@ -237,11 +273,15 @@ class VfhAvoider:
             cmd.direction = goal_bearing
             cmd.deviated = False
         else:
-            free = np.nonzero(~blocked)[0]
+            # Desvío: sólo hacia sectores libres Y vistos hace poco. Con una
+            # cámara, "sin puntos" fuera del campo no quiere decir libre.
+            free = np.nonzero(~blocked & seen)[0]
             if free.size == 0:
                 cmd.blocked = True
                 cmd.max_speed = 0.0
-                cmd.reason = 'rodeado: ningún sector libre'
+                cmd.unseen = bool(np.any(~blocked))
+                cmd.reason = ('sin salida vista: girando hasta ver un sector libre' if cmd.unseen
+                              else 'rodeado: ningún sector libre')
                 self._previous = None
                 return cmd
             candidates = self.centers[free]

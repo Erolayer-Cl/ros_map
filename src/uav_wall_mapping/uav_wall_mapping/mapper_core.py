@@ -76,6 +76,9 @@ class SectorInfo:
     live: np.ndarray          # sólo las fuentes en vivo (sin memoria)
     stamp: float              # instante de captura del dato en vivo más nuevo (-inf: ninguno)
     fresh: bool               # hay al menos una fuente en vivo dentro de `sector_timeout`
+    seen_age: np.ndarray = None   # s entre la última vez que un sensor en vivo miró cada
+    #                               sector y `stamp` (inf = nunca): un sector libre que nadie
+    #                               mira (fuera del campo de una cámara) es DESCONOCIDO
 
 
 class WallMapper:
@@ -101,6 +104,9 @@ class WallMapper:
         # así los sectores se recalculan con la pose actual en cada publicación
         # y no arrastran el corrimiento de una nube vieja.
         self._sources = {}
+        # Última vez (stamp de captura) que un sensor en vivo tuvo cada sector
+        # (rumbo NED) dentro de su campo horizontal.
+        self._seen = np.full(self.cfg.sector_bins, -math.inf)
         self.starved_clouds = 0        # nubes (casi) vacías: sensor ciego
         self.self_hits = 0             # puntos dentro de la caja del dron (acumulado)
         self.outliers = 0              # puntos aislados descartados (acumulado)
@@ -121,6 +127,7 @@ class WallMapper:
         self.clouds_integrated = 0
         self.points_integrated = 0
         self._sources.clear()
+        self._seen[:] = -math.inf
 
     def update_trajectory(self, position_ned):
         if self.home_down is None:
@@ -133,7 +140,7 @@ class WallMapper:
     # ------------------------------------------------------------------
     def integrate_sensor(self, points_sensor, mount, position_ned, q, stamp, source='lidar',
                          min_points=None, min_cloud_points=None, downsample=0.0,
-                         filter_outliers=True):
+                         filter_outliers=True, fov_deg=None):
         """Camino completo desde el marco del sensor: lo usan `mapper_node` y
         `closed_loop`, así los dos hacen exactamente lo mismo.
 
@@ -164,10 +171,11 @@ class WallMapper:
         heading = yaw_from_quat(q) + mount.heading_offset()
         return self.integrate(world, origin, position_ned, stamp, source=source,
                               sensor_heading=heading, min_points=min_points,
-                              min_cloud_points=min_cloud_points)
+                              min_cloud_points=min_cloud_points, fov_deg=fov_deg)
 
     def integrate(self, points_world, sensor_origin, drone_position, stamp,
-                  source='lidar', sensor_heading=0.0, min_points=None, min_cloud_points=None):
+                  source='lidar', sensor_heading=0.0, min_points=None, min_cloud_points=None,
+                  fov_deg=None):
         """Integra una nube ya transformada al mundo NED.
 
         `sensor_origin`: posición NED del sensor (para el tallado de espacio
@@ -180,7 +188,9 @@ class WallMapper:
         saturado, cable suelto que sigue publicando nubes vacías): no se talla
         espacio libre donde "no chocó" y la fuente no se refresca, así la
         evasión se entera de que no tiene datos y frena (0 para un
-        rangefinder, que sin eco no devuelve nada). Devuelve cuántos puntos se
+        rangefinder, que sin eco no devuelve nada). `fov_deg`: campo horizontal
+        de ESTE sensor (por defecto `sensor_fov_deg`): los sectores dentro de
+        él quedan marcados como "vistos" en `stamp`. Devuelve cuántos puntos se
         usaron.
         """
         c = self.cfg
@@ -214,9 +224,10 @@ class WallMapper:
             top = min(top, drone_h + c.max_height_above_drone)
         in_band = (heights >= c.min_height) & (heights <= top)
         hits_ne = pts[in_band, :2]
+        fov = math.radians(c.sensor_fov_deg if fov_deg is None else float(fov_deg))
         ends = free_ray_ends(origin[:2], hits_ne, n_bins=c.free_ray_bins,
                              no_hit_range=0.0 if starved else c.no_hit_free_range,
-                             fov_center=sensor_heading, fov=math.radians(c.sensor_fov_deg),
+                             fov_center=sensor_heading, fov=fov,
                              max_range=c.max_range, neighbor_bins=c.free_ray_neighbors)
         self.grid.update(origin[:2], hits_ne, ends)
         self.voxels.insert(pts[heights >= c.voxel_min_height], sensor_origin=origin)
@@ -225,6 +236,8 @@ class WallMapper:
                 & (heights <= drone_h + c.sector_band_above + c.sector_store_margin))
         rel = pts[:, :2] - drone[:2]
         keep &= np.hypot(rel[:, 0], rel[:, 1]) <= c.sector_range + 2.0
+        if not starved:
+            self._mark_seen(float(stamp), sensor_heading, fov)
         previous = self._sources.get(source)
         if not starved and (previous is None or float(stamp) >= previous[0]):
             self._sources[source] = (float(stamp), pts[keep, :2].copy(), heights[keep].copy(),
@@ -233,6 +246,16 @@ class WallMapper:
         self.clouds_integrated += 1
         self.points_integrated += int(pts.shape[0])
         return int(pts.shape[0])
+
+    def _mark_seen(self, stamp, heading, fov):
+        if fov >= 2.0 * math.pi - 1e-6:
+            np.maximum(self._seen, stamp, out=self._seen)
+            return
+        n = self.cfg.sector_bins
+        centers = np.arange(n) * (2.0 * math.pi / n)
+        diff = np.abs(np.arctan2(np.sin(centers - heading), np.cos(centers - heading)))
+        inside = diff <= fov / 2.0
+        self._seen[inside] = np.maximum(self._seen[inside], stamp)
 
     def map_sectors(self, drone_position):
         """Sectores calculados con las celdas ocupadas del mapa cerca del dron.
@@ -292,8 +315,12 @@ class WallMapper:
         ranges = live
         if c.sectors_from_map:
             ranges = np.minimum(live, self.map_sectors(drone_position))
+        if math.isfinite(newest):
+            seen_age = np.where(np.isfinite(self._seen), np.maximum(newest - self._seen, 0.0), INF)
+        else:
+            seen_age = np.full(c.sector_bins, INF)
         return SectorInfo(ranges=ranges, live=live, stamp=newest,
-                          fresh=math.isfinite(newest))
+                          fresh=math.isfinite(newest), seen_age=seen_age)
 
     def sectors(self, now, drone_position):
         """Sectores combinados (mínimo) de las fuentes frescas + el mapa."""

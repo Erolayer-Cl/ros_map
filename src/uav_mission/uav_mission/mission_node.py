@@ -168,12 +168,15 @@ class MissionNode(Node):
             shift = int(round(msg.angle_offset / msg.increment))
             ranges = np.roll(ranges, shift)
         live = np.asarray(getattr(msg, 'live_ranges', []) or [], dtype=float)
-        if shift and len(live):
-            live = np.roll(live, shift)
+        seen_age = np.asarray(getattr(msg, 'seen_age', []) or [], dtype=float)
+        if shift:
+            live = np.roll(live, shift) if len(live) else live
+            seen_age = np.roll(seen_age, shift) if len(seen_age) else seen_age
         stamp = self._sectors_stamp(msg)
         with self.lock:
             self.core.update_sectors(ranges, stamp, range_max=float(msg.range_max),
-                                     live=live if len(live) == len(ranges) else None)
+                                     live=live if len(live) == len(ranges) else None,
+                                     seen_age=seen_age if len(seen_age) == len(ranges) else None)
 
     def _on_map(self, msg):
         values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)

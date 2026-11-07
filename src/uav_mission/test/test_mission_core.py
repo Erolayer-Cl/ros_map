@@ -20,6 +20,7 @@ class FakeVehicle:
         self.armed = False
         self.offboard = False
         self.pos = np.zeros(3)
+        self.sectors_kwargs = {}
 
     def tick(self, t):
         if self.core.stream_offboard and self.core.setpoint and self.armed:
@@ -28,7 +29,7 @@ class FakeVehicle:
             self.pos = self.pos + step
         self.core.update_vehicle(self.pos, (0.0, 0.0, 0.0), 0.0)
         self.core.update_status(self.armed, self.offboard)
-        self.core.update_sectors(np.full(72, float('inf')), t)
+        self.core.update_sectors(np.full(72, float('inf')), t, **self.sectors_kwargs)
         self.core.step(t)
         for cmd in self.core.pop_commands():
             if cmd == 'arm':
@@ -103,6 +104,28 @@ class MissionCoreTest(unittest.TestCase):
         ok, _ = core.resume(t)
         self.assertTrue(ok)
         self.assertEqual(core.state, State.NAVIGATE)
+
+    def test_turns_before_moving_out_of_view(self):
+        """scaleToFOV: con una cámara mirando al norte y el objetivo al sur, no
+        se avanza: primero se gira hasta tener el avance a la vista."""
+        core = make_core(**{'waypoints': [-15.0, 0.0, 3.0]})
+        vehicle = FakeVehicle(core)
+        seen_age = np.full(72, float('inf'))
+        seen_age[63:72] = 0.0
+        seen_age[0:10] = 0.0          # sólo se ve ±45° alrededor del norte
+        vehicle.sectors_kwargs = {'seen_age': seen_age}
+        vehicle.tick(0.0)
+        core.start_waypoints(0.0)
+        t = 0.0
+        while t < 10.0 and core.state in (State.ARMING, State.TAKEOFF):
+            t += 0.05
+            vehicle.tick(t)
+        north0 = vehicle.pos[0]
+        for _ in range(20):
+            t += 0.05
+            vehicle.tick(t)
+        self.assertAlmostEqual(vehicle.pos[0], north0, delta=0.05)    # no se movió
+        self.assertGreater(abs(core._yaw_sp), 0.5)                     # pero gira
 
     def test_bad_area_is_rejected(self):
         core = make_core(**{'map_mission.area': [0.0, 0.0, 0.0, 5.0]})

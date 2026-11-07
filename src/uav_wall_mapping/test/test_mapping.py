@@ -225,6 +225,25 @@ class FilterTest(unittest.TestCase):
         self.assertGreater(mapper.self_hits, 0)
 
 
+class SeenSectorsTest(unittest.TestCase):
+
+    def test_camera_marks_only_its_fov(self):
+        mapper = WallMapper(MapperConfig(sensor_fov_deg=87.0))
+        mapper.set_home(0.0)
+        e = np.linspace(-1, 1, 60)
+        wall = np.column_stack((np.full_like(e, 4.0), e, np.full_like(e, -2.0)))
+        mapper.integrate(wall, (0.0, 0.0, -2.0), (0.0, 0.0, -2.0), stamp=2.0, sensor_heading=0.0)
+        info = mapper.sector_info(2.1, (0.0, 0.0, -2.0))
+        self.assertEqual(float(info.seen_age[0]), 0.0)        # adelante: visto
+        self.assertTrue(math.isinf(info.seen_age[36]))       # atrás: nunca
+        self.assertTrue(math.isinf(info.seen_age[18]))       # 90° al costado: fuera de 87°
+
+    def test_px4_unknown_is_uint16_max(self):
+        distances = to_px4_obstacle_distance([1.5, float('inf'), float('inf')], 20.0,
+                                             unknown_mask=[False, False, True])
+        self.assertEqual(distances, [150, 2001, 65535])
+
+
 class HeightBandTest(unittest.TestCase):
 
     def test_ceiling_is_not_a_2d_obstacle(self):
