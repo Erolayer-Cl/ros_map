@@ -192,7 +192,13 @@ class WallMapper:
             rng = np.linalg.norm(pts - origin, axis=1)
             pts = pts[(rng >= c.min_range) & (rng <= c.max_range)]
         heights = self.home_down - pts[:, 2]
-        needed = c.min_cloud_points if min_cloud_points is None else int(min_cloud_points)
+        # Sólo para sensores de campo amplio: un lidar de 360° siempre ve algo
+        # (el piso, una pared); una cámara mirando a un espacio abierto devuelve
+        # una nube vacía y está sana (lo que no ve queda "no visto", ver seen_age).
+        if min_cloud_points is not None:
+            needed = int(min_cloud_points)
+        else:
+            needed = c.min_cloud_points if c.sensor_fov_deg >= 180.0 else 0
         starved = pts.shape[0] < needed
         if starved:
             self.starved_clouds += 1

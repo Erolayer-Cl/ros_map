@@ -19,6 +19,10 @@ Detalles que importan:
   la próxima replanificación la esquiva.
 - Si el dron ya está dentro de la zona inflada (pasa al bordear de cerca), se
   arranca desde la celda libre más cercana en vez de fallar.
+- La distancia a los obstáculos se mide en la grilla FINA (la del mapa) y
+  recién después se baja a la gruesa: medirla entre celdas gruesas "comía"
+  hasta media celda de cada lado de una puerta, y con inflado 0.9 m el ancho
+  mínimo de paso era ~2.4 m. Ahora es ≈ 2·(inflation_radius + resolution/2).
 """
 
 import heapq
@@ -81,7 +85,7 @@ def distance_cells(occupied, max_cells):
 
 class GridPlanner:
 
-    def __init__(self, resolution=0.3, inflation_radius=0.9, cost_radius=2.0,
+    def __init__(self, resolution=0.3, inflation_radius=0.65, cost_radius=2.0,
                  proximity_weight=2.0, unknown_penalty=0.5, occupied_threshold=65,
                  max_expansions=60000, window_margin=12.0, goal_tolerance=1.5):
         self.resolution = float(resolution)
@@ -123,7 +127,22 @@ class GridPlanner:
         unknown = (fine < 0).reshape(shape).all(axis=(1, 3))
         origin_n = snapshot.origin_n + r0 * snapshot.resolution
         origin_e = snapshot.origin_e + c0 * snapshot.resolution
+        self._fine = (fine >= self.occupied_threshold, factor, snapshot.resolution)
         return occupied, unknown, origin_n, origin_e, res
+
+    def _clearance(self, occupied, res):
+        """Distancia (m) de cada celda gruesa al obstáculo más cercano, medida
+        en la grilla fina: mínimo del bloque más media celda gruesa (≈ la
+        distancia desde el centro de la celda)."""
+        fine_occ, factor, fine_res = self._fine
+        if factor <= 1:
+            return distance_cells(occupied, int(math.ceil(self.cost_radius / res)) + 1) * res
+        dist = distance_cells(fine_occ, int(math.ceil(self.cost_radius / fine_res)) + 2) * fine_res
+        rows, cols = occupied.shape
+        block = dist.reshape(rows, factor, cols, factor).min(axis=(1, 3))
+        out = block + res / 2.0
+        out[occupied] = 0.0
+        return out
 
     def plan(self, snapshot, start_ne, goal_ne):
         start_ne = (float(start_ne[0]), float(start_ne[1]))
@@ -132,8 +151,7 @@ class GridPlanner:
         rows, cols = occupied.shape
 
         infl_cells = int(math.ceil(self.inflation_radius / res))
-        cost_cells = int(math.ceil(self.cost_radius / res))
-        dist = distance_cells(occupied, cost_cells + 1) * res
+        dist = self._clearance(occupied, res)
         blocked = dist < self.inflation_radius
         proximity = np.clip((self.cost_radius - dist) / max(self.cost_radius - self.inflation_radius, 1e-3),
                             0.0, 1.0) * self.proximity_weight

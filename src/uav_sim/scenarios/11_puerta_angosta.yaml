@@ -1,0 +1,30 @@
+# Caso 11: una pared de 30 m con una sola puerta de 2.0 m (puerta doble o
+# portón) y el objetivo del otro lado. Antes no se cruzaba nada de menos de
+# ~2.4 m: el A* inflaba 0.9 m y medía la distancia entre celdas gruesas de
+# 0.3 m (QA, casos 2a-2d: waypoint abandonado a los 7 s, reintentando el A*
+# en cada ciclo). Ahora el A* infla radio + 0.2 m (0.65) medido en la grilla
+# fina, y el VFH agranda radio + margen (0.8 m). Ancho mínimo de paso
+# práctico: ~2·(robot_radius + safety_margin) + un sector ≈ 1.8-2.0 m (con
+# 1.6 m el VFH oscila delante de la puerta: no ve el hueco desde cerca).
+nombre: 11_puerta_angosta
+descripcion: Pared de 30 m con una puerta de 2.0 m; el waypoint está del otro lado.
+objetos:
+  - tipo: pared
+    desde: [8.0, -15.0]
+    hasta: [8.0, 0.0]
+    alto: 4.0
+    espesor: 0.25
+  - tipo: pared
+    desde: [8.0, 2.0]
+    hasta: [8.0, 15.0]
+    alto: 4.0
+    espesor: 0.25
+mision:
+  tipo: waypoints
+  altura: 2.0
+  waypoints:
+    - [15.0, 1.0]
+esperado:
+  paredes_planas_min: 2
+  estado_final: DONE
+  waypoints_alcanzados_min: 1

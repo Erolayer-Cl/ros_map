@@ -177,6 +177,22 @@ class PlannerTest(unittest.TestCase):
         for n, e in path:
             self.assertLess(snap.value_at(n, e), 65)
 
+    def test_two_meter_door_is_passable(self):
+        """Pared con una puerta de 2 m: el A* (inflado 0.65 m medido en la
+        grilla fina) tiene que cruzarla y no rodear."""
+        res = 0.15
+        values = np.zeros((200, 200), dtype=np.int8)
+        origin = -15.0
+        row = int((8.0 - origin) / res)
+        values[row:row + 2, :] = 100
+        c0, c1 = int((0.0 - origin) / res), int((2.0 - origin) / res)
+        values[row:row + 2, c0:c1] = 0
+        snap = GridSnapshot(values=values, resolution=res, origin_n=origin, origin_e=origin)
+        result = GridPlanner(inflation_radius=0.65).plan(snap, (2.0, 1.0), (14.0, 1.0))
+        self.assertTrue(result.ok, result.reason)
+        path = np.asarray(result.path)
+        self.assertLess(np.max(np.abs(path[:, 1] - 1.0)), 1.0)
+
     def test_unknown_space_is_traversable(self):
         snap = GridSnapshot(values=np.full((100, 100), -1, dtype=np.int8), resolution=0.2,
                             origin_n=-10.0, origin_e=-10.0)

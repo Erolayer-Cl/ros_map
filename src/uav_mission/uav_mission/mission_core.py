@@ -81,7 +81,7 @@ DEFAULTS = {
     'nav.velocity_feedforward': True,
     # --- planificador ---
     'plan.resolution': 0.3,
-    'plan.inflation_radius': 0.9,
+    'plan.inflation_radius': 0.65,      # radio del dron + 0.2 m (duro); el resto es costo suave
     'plan.cost_radius': 2.0,
     'plan.unknown_penalty': 0.5,
     'plan.max_expansions': 60000,
@@ -90,10 +90,10 @@ DEFAULTS = {
     # --- evasión ---
     'avoid.enabled': True,
     'avoid.robot_radius': 0.45,
-    'avoid.safety_margin': 0.5,
+    'avoid.safety_margin': 0.35,
     'avoid.lookahead': 4.0,             # m mínimos; crece con la distancia de frenado
     'avoid.stop_distance': 1.3,         # m desde el centro: frenado del todo
-    'avoid.emergency_distance': 0.9,
+    'avoid.emergency_distance': 0.7,    # < radio + margen: si no, bordear dispara la huida
     'avoid.escape_speed': 0.75,         # m/s al alejarse (ArduPilot AVOID_BACKUP_SPD)
     'avoid.max_decel': 1.0,             # m/s² supuestos para frenar (ArduPilot: ≤ 1)
     'avoid.latency': 0.4,               # s sensor→frenado, sin la edad del dato (PX4 CP_DELAY)
@@ -200,6 +200,7 @@ class MissionCore:
 
         self._avoid_dir_prev = None
         self._deviate_since = None
+        self._freeze_anchor = None     # dónde se empezó a frenar (se sostiene ahí)
         self._emergency_since = None
         self._blocked_since = None
         self._avoid_active = False
@@ -716,6 +717,12 @@ class MissionCore:
         if self._path is not None and self._path_goal_id == self._goal_id and \
                 now - self._last_plan_time < self.p('nav.replan_period'):
             return None
+        # Tras un fallo también se espera replan_period: antes se reintentaba en
+        # cada ciclo y plan.max_failures se agotaba en 0.15 s, con un mapa que
+        # todavía no había cambiado (QA, puertas).
+        if self._path is None and self._plan_failures > 0 and \
+                now - self._last_plan_time < self.p('nav.replan_period'):
+            return None
         self._plan_pending = True
         return {'id': self._goal_id, 'snapshot': self.snapshot,
                 'start': (self.position[0], self.position[1]),
@@ -926,24 +933,42 @@ class MissionCore:
     # Zanahoria
     # ------------------------------------------------------------------
     def _advance_carrot(self, direction, speed, stop_at=None):
-        # La zanahoria no se adelanta más que `v·lead_time`: el controlador de
-        # posición de PX4 suma ~MPC_XY_P·(distancia a la zanahoria) a la
-        # velocidad, así que una zanahoria lejos con la velocidad ya recortada
-        # por el frenado seguiría empujando al dron hacia el obstáculo.
-        lead = min(float(self.p('max_lead')), speed * float(self.p('nav.lead_time')))
+        self._freeze_anchor = None
         step = speed * self._dt
         if stop_at is not None:
             remaining = distance_2d(self._carrot, stop_at)
             if remaining <= step:
                 self._carrot[0], self._carrot[1] = stop_at
-                self._clamp_lead(lead)
+                self._limit_along_lead(direction, speed)
+                self._clamp_lead()
                 return
         self._carrot[0] += math.cos(direction) * step
         self._carrot[1] += math.sin(direction) * step
-        self._clamp_lead(lead)
+        self._limit_along_lead(direction, speed)
+        self._clamp_lead()
+
+    def _limit_along_lead(self, direction, speed):
+        """La zanahoria no se adelanta más que `v·lead_time` EN LA DIRECCIÓN DE
+        AVANCE: el control de posición de PX4 suma ~MPC_XY_P·(distancia a la
+        zanahoria) a la velocidad, así que una zanahoria lejos con la velocidad
+        ya recortada por el frenado seguiría empujando hacia el obstáculo. La
+        componente lateral no se recorta (hasta `max_lead`): es la que le da al
+        control autoridad para corregir una deriva por viento."""
+        lead = speed * float(self.p('nav.lead_time'))
+        un, ue = math.cos(direction), math.sin(direction)
+        along = (self._carrot[0] - self.position[0]) * un + (self._carrot[1] - self.position[1]) * ue
+        if along > lead:
+            self._carrot[0] -= (along - lead) * un
+            self._carrot[1] -= (along - lead) * ue
 
     def _freeze(self):
-        self._carrot[0], self._carrot[1] = self.position[0], self.position[1]
+        """Frenar y sostener la posición donde se empezó a frenar (no la que el
+        dron tenga en cada ciclo: con viento, seguir al dron dejaría el control
+        sin error de posición y la deriva lo llevaría contra la pared)."""
+        if self._freeze_anchor is None:
+            self._freeze_anchor = (self.position[0], self.position[1])
+        self._carrot[0], self._carrot[1] = self._freeze_anchor
+        self._clamp_lead()
         self._avoid_dir_prev = None
 
     def _move_vertical(self, target_d):
