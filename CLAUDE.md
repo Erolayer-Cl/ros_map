@@ -20,8 +20,11 @@ Obsidian), `UAVinformaticaignacio/Jetson_pruebas` y la organización
 `feat/yolo-y-mision`). Ninguno trae una lista de componentes con modelos.
 
 - **Cámaras: una mirando al frente y una mirando abajo** (dicho por el usuario).
-  Modelos sin definir; `Jetson_pruebas/run_container.sh` pasa `/dev/video0`
-  (cámara USB/CSI común, sin profundidad).
+  Modelos sin definir (el usuario todavía no eligió la frontal). Recomendado:
+  frontal **RealSense D455** (o Orbbec Gemini 336L), ambas con nube en marco
+  óptico → `mapper_realsense.yaml` sirve tal cual salvo tópico y montaje;
+  abajo, para posición sin GPS, un sensor de flujo óptico con telémetro
+  (Holybro H-Flow / ARK Flow, DroneCAN a la 6C) antes que una cámara.
 - **No hay lidar.** Ningún repo lo nombra como componente: la wiki sólo dice
   "sensores (GPS, cámara, lidar)" de forma genérica, y la rama de la org esquiva
   con 5 sensores `Distance` (rangefinders 1D) de AirSim + cámara frontal para YOLO.
