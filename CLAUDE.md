@@ -12,6 +12,40 @@ paredes clasificadas. Tomado como referencia: `Laboratorio-VNT/UAV_ros2-beta`.
 
 Comentarios, docstrings, logs y docs en español; identificadores en inglés.
 
+## Hardware del dron real (lo que se sabe, 2026-11)
+
+Fuentes: el usuario + sus repos `UAVinformaticaignacio/UAV_wiki` (vault de
+Obsidian), `UAVinformaticaignacio/Jetson_pruebas` y la organización
+`Laboratorio-VNT/UAV_ros2-beta` (ramas `main`, `chore/team-setup`,
+`feat/yolo-y-mision`). Ninguno trae una lista de componentes con modelos.
+
+- **Cámaras: una mirando al frente y una mirando abajo** (dicho por el usuario).
+  Modelos sin definir; `Jetson_pruebas/run_container.sh` pasa `/dev/video0`
+  (cámara USB/CSI común, sin profundidad).
+- **No hay lidar.** Ningún repo lo nombra como componente: la wiki sólo dice
+  "sensores (GPS, cámara, lidar)" de forma genérica, y la rama de la org esquiva
+  con 5 sensores `Distance` (rangefinders 1D) de AirSim + cámara frontal para YOLO.
+- Computadora: **Jetson Nano** (L4T r32.7.1 = JetPack 4.6, Ubuntu 18.04),
+  ROS 2 Humble en el contenedor `dustynv/ros:humble-ros-base-l4t-r32.7.1`,
+  swap 4 GB. Controladora: Pixhawk con PX4, por serie a la Jetson.
+
+Consecuencias para este stack:
+- El mapeo y la evasión necesitan **puntos 3D**. Una cámara RGB sola no sirve:
+  la frontal tiene que ser **de profundidad** (RealSense D435i/D455, OAK-D,
+  Orbbec) → usar `mapper_realsense.yaml` (FOV ~87°, `no_hit_free_range` 3 m).
+  Con una webcam común sólo queda YOLO, no paredes.
+- Con cámara frontal el dron ve ~87°: hay que girar para ver los costados (la
+  exploración ya lo hace) y no hay nada atrás. Considerar 2-4 rangefinders
+  laterales/traseros a `/fmu/in/obstacle_distance` o como sectores extra.
+- La cámara de abajo no entra al mapper (la franja de altura descarta el piso):
+  sirve para flujo óptico (posición sin GPS en interiores, con un telémetro
+  hacia abajo) y aterrizaje de precisión/ArUco. En interiores sin GPS **la
+  posición es requisito** (docs/sensores.md §4).
+- Jetson Nano: 4 núcleos A57, sin margen para FAST-LIO2/VINS pesado. Bajar
+  `cloud.max_rate` (5 Hz) y subir `cloud.downsample` (0.1) si el mapper no
+  llega. Verificar `python3 --version` ≥ 3.8 en el contenedor (se usan
+  `dataclasses` y `math.dist`). La Orin Nano es la opción recomendada.
+
 ## Probar
 
 ```sh

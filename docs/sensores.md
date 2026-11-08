@@ -119,6 +119,22 @@ Mid-360; una Orin NX 16 GB deja margen para FAST-LIO2 o detección con YOLO.
 JetPack 5 trae Ubuntu 20.04: ahí Humble sólo corre compilado desde fuente o en
 Docker.
 
+### Configuración del dron del laboratorio (sin lidar)
+
+El dron previsto lleva **una cámara al frente y una hacia abajo**, sin lidar,
+con una Jetson Nano (JetPack 4.6, Humble en Docker `dustynv`). Qué hace falta
+para que este stack funcione así:
+
+| Pieza | Rol | Qué tiene que ser |
+|---|---|---|
+| Cámara frontal | Paredes, evasión, mapa | **De profundidad** (D435i/D455, OAK-D, Orbbec Gemini). Config: `mapper_realsense.yaml`. Una RGB común sólo sirve para YOLO. |
+| Cámara inferior | Posición y aterrizaje | Flujo óptico + telémetro hacia abajo (p. ej. ARK Flow, o PMW3901 + TFmini) para volar sin GPS; o ArUco para aterrizaje de precisión. No entra al mapper. |
+| Opcional | Costados y atrás | 2-4 rangefinders 1D: la cámara frontal ve ~87° y nada detrás. |
+
+Límites con cámara frontal: volar ≤ 1 m/s, el mapeo tarda más (tiene que girar
+para ver los costados) y la Jetson Nano va justa: `cloud.max_rate: 5.0`,
+`cloud.downsample: 0.1`. Con una Orin Nano esos límites desaparecen.
+
 ---
 
 ## 4. Posición del dron: requisito previo
