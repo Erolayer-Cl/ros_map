@@ -81,13 +81,19 @@ class PoseBuffer:
         self._lock = threading.Lock()
 
     def add_position(self, t, position_ned):
+        """Las muestras no finitas (PX4 manda NaN en x/y cuando el estimador no
+        tiene posición) se descartan: una sola NaN en el historial contamina
+        toda interpolación que la toque."""
+        p = np.asarray(position_ned, dtype=float).reshape(3)
+        if not math.isfinite(float(t)) or not np.all(np.isfinite(p)):
+            return
         with self._lock:
-            self._pos.add(t, np.asarray(position_ned, dtype=float).reshape(3).copy())
+            self._pos.add(t, p.copy())
 
     def add_attitude(self, t, q):
         q = np.asarray(q, dtype=float).reshape(4)
         norm = float(np.linalg.norm(q))
-        if norm < 1e-9 or not math.isfinite(norm):
+        if norm < 1e-9 or not math.isfinite(norm) or not math.isfinite(float(t)):
             return
         with self._lock:
             self._att.add(t, q / norm)
@@ -131,6 +137,8 @@ class PoseBuffer:
     def lookup(self, t):
         """`(posición, q)` en el instante t, o None si no se puede."""
         t = float(t)
+        if not math.isfinite(t):
+            return None
         with self._lock:
             pos = self._sample(self._pos, t, lambda a, b, tau: a + (b - a) * tau)
             q = self._sample(self._att, t, quat_slerp)

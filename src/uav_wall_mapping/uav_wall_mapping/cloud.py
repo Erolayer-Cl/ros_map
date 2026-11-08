@@ -42,21 +42,37 @@ def pointcloud2_to_xyz(fields, data, point_step, width, height, is_bigendian=Fal
         raise ValueError('la nube no tiene campos x/y/z')
 
     count = int(width) * int(height)
-    if count == 0 or point_step == 0:
+    point_step = int(point_step)
+    if count <= 0 or point_step <= 0:
         return np.zeros((0, 3))
 
+    # Un mensaje malformado (driver con bug, nube cortada por la red) no puede
+    # tirar el nodo: todo lo estructural se valida y sale como ValueError, que
+    # el nodo registra y descarta.
     names, formats, offsets = [], [], []
     for axis in ('x', 'y', 'z'):
         offset, datatype = lookup[axis]
+        if datatype not in POINTFIELD_DTYPES:
+            raise ValueError(f'campo {axis} con datatype {datatype} desconocido')
         dtype = np.dtype(POINTFIELD_DTYPES[datatype])
+        if offset < 0 or offset + dtype.itemsize > point_step:
+            raise ValueError(f'campo {axis} (offset {offset}, {dtype.itemsize} B) no entra '
+                             f'en point_step = {point_step}')
         if is_bigendian:
             dtype = dtype.newbyteorder('>')
         names.append(axis)
         formats.append(dtype)
         offsets.append(offset)
+    buf = bytes(data)
+    available = len(buf) // point_step
+    if available < count:
+        # Nube truncada: se usa lo que llegó entero.
+        count = available
+        if count == 0:
+            return np.zeros((0, 3))
     structured = np.dtype({'names': names, 'formats': formats,
-                           'offsets': offsets, 'itemsize': int(point_step)})
-    raw = np.frombuffer(bytes(data), dtype=structured, count=count)
+                           'offsets': offsets, 'itemsize': point_step})
+    raw = np.frombuffer(buf, dtype=structured, count=count)
     xyz = np.column_stack((raw['x'], raw['y'], raw['z'])).astype(np.float64)
     return xyz[np.all(np.isfinite(xyz), axis=1)]
 

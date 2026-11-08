@@ -41,6 +41,7 @@ from uav_sim.scenario import load_scenario
 from uav_sim.world import LidarModel, SimVehicle, World
 from uav_wall_mapping.cloud import xyz_to_pointcloud2_data
 from uav_wall_mapping.geometry import rot_to_quat_xyzw
+from uav_wall_mapping.guard import GuardedNodeMixin
 
 PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                      durability=DurabilityPolicy.VOLATILE,
@@ -50,7 +51,7 @@ LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                      history=HistoryPolicy.KEEP_LAST, depth=1)
 
 
-class FakePX4World(Node):
+class FakePX4World(GuardedNodeMixin, Node):
 
     def __init__(self):
         super().__init__('fake_px4_world')

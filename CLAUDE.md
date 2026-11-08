@@ -60,6 +60,7 @@ Consecuencias para este stack:
 
 ```sh
 ./run_tests.sh rapido     # unitarias, segundos, sin ROS (python3 + numpy + pyyaml)
+./run_tests.sh robustez   # fuzzer + los 3 nodos sobre un ROS falso con basura en vuelo
 ./run_tests.sh            # + 6 escenarios de lazo cerrado
 TODOS=1 ./run_tests.sh    # los 14 escenarios (~3 min)
 PYTHONPATH=src/uav_wall_mapping:src/uav_mission:src/uav_sim python3 -m uav_sim.closed_loop --escenario 06_habitacion -v
@@ -87,6 +88,13 @@ Después de cambiar un `.msg`: `rm -rf build/uav_map_msgs install/uav_map_msgs`.
   bloque `esperado:` que verifica `test_closed_loop.py`.
 
 ## Trampas conocidas (no deshacer)
+
+- Hardening (docs/hardening.md): NaN es "no sé", nunca "libre" (`inf` sí es
+  libre). Todo nodo hereda `GuardedNodeMixin` ANTES que `Node` (una excepción
+  en un callback de rclpy mata el nodo en vuelo). Ningún setpoint sale sin
+  `_publishable_setpoint()`. `validate_params()` / `MapperConfig.problems()`:
+  con errores no se despega / no arranca; regla nueva = agregarla ahí y en
+  `test_hardening.py`.
 
 - Tallado de espacio libre: los sectores vacíos se limitan por los vecinos y los
   rayos rasantes se acortan; si no, las paredes se borran (ver `sectors.py`).

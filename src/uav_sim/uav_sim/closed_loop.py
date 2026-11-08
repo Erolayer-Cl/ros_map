@@ -14,7 +14,6 @@ Corre exactamente las mismas clases que los nodos (`MissionCore`, `WallMapper`,
 
 import argparse
 import math
-import os
 import sys
 import time
 from collections import deque

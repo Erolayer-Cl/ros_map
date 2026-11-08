@@ -108,6 +108,9 @@ class VfhAvoider:
 
     def __init__(self, config=None, n_bins=72):
         self.cfg = config or AvoidConfig()
+        if int(n_bins) < 8:
+            raise ValueError(f'VfhAvoider necesita al menos 8 sectores (llegaron {n_bins})')
+        n_bins = int(n_bins)
         self.n_bins = n_bins
         self.increment = 2.0 * math.pi / n_bins
         self.centers = np.arange(n_bins) * self.increment

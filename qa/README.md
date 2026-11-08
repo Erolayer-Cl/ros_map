@@ -25,3 +25,13 @@ Estado al último commit: 61/65 sin falla, 0 choques. Fallan, como límites
 conocidos: puertas de 1.2 m (2a, 2f; 15 cm por lado con un dron de 0.9 m), el
 rastro de una caja que se detuvo y se fue lejos del camino (7b) y la cámara
 configurada como lidar (9d, sin campo de visión: tarda y se queda quieta 28 s).
+
+## Robustez (`qa/fuzz`, `qa/nodos`)
+
+- `qa/fuzz/fuzz_core.py`: 29 entradas basura contra la lógica pura (NaN, nubes
+  malformadas, reloj hacia atrás, sectores vacíos...). Sale con 1 si alguna falla.
+- `qa/nodos/fakeros.py`: ROS 2 en memoria para correr `mapper_node`,
+  `mission_node` y `fake_px4_world` sin ROS instalado. `run_nodes.py` vuela una
+  misión; `run_inject.py <escenario> <s> <basura/s>` además inyecta mensajes
+  rotos en vuelo y pasa si termina DONE sin choque ni setpoints no finitos.
+- `./run_tests.sh robustez` corre los dos. Ver docs/hardening.md.

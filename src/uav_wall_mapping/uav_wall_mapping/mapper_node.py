@@ -60,8 +60,8 @@ from uav_map_msgs.msg import ObstacleSectors, Wall as WallMsg, WallArray
 from uav_wall_mapping.cloud import (laserscan_to_xyz, pointcloud2_to_xyz, range_to_xyz,
                                     xyz_to_pointcloud2_data)
 from uav_wall_mapping.export import WALL_COLORS, save_map_bundle
-from uav_wall_mapping.geometry import (SensorMount, ned_to_enu, px4_quat_to_enu_flu,
-                                       yaw_from_quat)
+from uav_wall_mapping.guard import GuardedNodeMixin
+from uav_wall_mapping.geometry import SensorMount, ned_to_enu, px4_quat_to_enu_flu
 from uav_wall_mapping.mapper_core import MapperConfig, WallMapper
 from uav_wall_mapping.pose_buffer import PoseBuffer
 from uav_wall_mapping.sectors import to_px4_obstacle_distance
@@ -97,7 +97,7 @@ def _triplets(flat, count, default):
     return out
 
 
-class MapperNode(Node):
+class MapperNode(GuardedNodeMixin, Node):
 
     def __init__(self):
         super().__init__('mapper_node')
@@ -137,7 +137,15 @@ class MapperNode(Node):
             traversed_radius=p('map.traversed_radius').value,
             walls={k: p(f'walls.{k}').value for k in WALL_PARAMS},
         )
-        self.mapper = WallMapper(cfg)
+        for name in ('sectors.rate', 'publish.map_rate', 'publish.walls_period',
+                     'publish.cloud_period', 'cloud.max_rate'):
+            value = p(name).value
+            if not (isinstance(value, (int, float)) and math.isfinite(value) and value > 0):
+                raise ValueError(f'{name} = {value}: tiene que ser > 0')
+        if p('sectors.rate').value < 5.0:
+            self.get_logger().warn(f'sectors.rate = {p("sectors.rate").value} Hz: la evasión '
+                                   'considera viejo un dato de más de 0.5 s')
+        self.mapper = WallMapper(cfg)     # ValueError con la lista de problemas si cfg está mal
         self.lock = threading.Lock()
         self.poses = PoseBuffer(horizon=p('time.pose_history').value,
                                 max_extrapolation=p('time.max_extrapolation').value)
@@ -347,20 +355,26 @@ class MapperNode(Node):
             return
         t = self._px4_time(msg, 'vehicle_local_position')
         position = (float(msg.x), float(msg.y), float(msg.z))
+        if not all(math.isfinite(v) for v in position):
+            # PX4 puede mandar NaN con los flags todavía en true un ciclo.
+            self.position_valid = False
+            return
         self.poses.add_position(t, position)
-        if not self._attitude_ever:
+        if not self._attitude_ever and math.isfinite(float(msg.heading)):
             # Sin actitud todavía: alcanza con el rumbo para empezar.
             self.poses.add_attitude(t, [math.cos(msg.heading / 2), 0.0, 0.0,
                                         math.sin(msg.heading / 2)])
         with self.lock:
             self.position = position
             self.pose_stamp = self._now()
-            if self.q is None:
+            if self.q is None and math.isfinite(float(msg.heading)):
                 self.q = [math.cos(msg.heading / 2), 0.0, 0.0, math.sin(msg.heading / 2)]
             self.mapper.update_trajectory(self.position)
 
     def _on_attitude(self, msg):
         q = [float(v) for v in msg.q]
+        if not all(math.isfinite(v) for v in q) or sum(v * v for v in q) < 0.25:
+            return
         self._attitude_ever = True
         self.poses.add_attitude(self._px4_time(msg, 'vehicle_attitude'), q)
         self.q = q

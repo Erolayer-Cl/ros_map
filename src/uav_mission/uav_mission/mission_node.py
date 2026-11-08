@@ -21,6 +21,7 @@ Hilos: el lazo de control corre a 20 Hz en su propio grupo de callbacks; el A*
 setpoints (PX4 sale de OFFBOARD si pasa más de COM_OF_LOSS_T sin recibirlos).
 """
 
+import math
 import threading
 
 import numpy as np
@@ -39,6 +40,7 @@ from uav_map_msgs.msg import MissionStatus, ObstacleSectors, WallArray
 
 from uav_mission.mission_core import DEFAULTS, FLYING_STATES, MissionCore, MissionType, State
 from uav_mission.planner import PlanResult
+from uav_wall_mapping.guard import GuardedNodeMixin
 from uav_wall_mapping.occupancy import GridSnapshot
 
 NAN = float('nan')
@@ -58,7 +60,7 @@ SECTORS_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 assert {s.value for s in State} <= set(range(13)), 'State tiene que coincidir con MissionStatus'
 
 
-class MissionNode(Node):
+class MissionNode(GuardedNodeMixin, Node):
 
     def __init__(self):
         super().__init__('mission_node')
@@ -113,6 +115,10 @@ class MissionNode(Node):
         self.cli_map_save = self.create_client(Trigger, '/map/save')
 
         rate = float(self.get_parameter('control_rate').value)
+        if not (math.isfinite(rate) and rate > 0.0):
+            # La misión no va a despegar (config_errors); el timer igual tiene
+            # que existir para publicar el estado.
+            rate = 20.0
         self.create_timer(1.0 / rate, self._loop, callback_group=control)
         self.create_timer(0.2, self._plan, callback_group=planning)
         self.create_timer(0.5, self._publish_path, callback_group=inputs)
@@ -165,7 +171,7 @@ class MissionNode(Node):
     def _on_sectors(self, msg):
         ranges = np.asarray(msg.ranges, dtype=float)
         shift = 0
-        if abs(msg.angle_offset) > 1e-6 and len(ranges):
+        if abs(msg.angle_offset) > 1e-6 and len(ranges) and msg.increment > 1e-6:
             shift = int(round(msg.angle_offset / msg.increment))
             ranges = np.roll(ranges, shift)
         live = np.asarray(getattr(msg, 'live_ranges', []) or [], dtype=float)
@@ -180,7 +186,12 @@ class MissionNode(Node):
                                      seen_age=seen_age if len(seen_age) == len(ranges) else None)
 
     def _on_map(self, msg):
-        values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
+        w, h = int(msg.info.width), int(msg.info.height)
+        if w <= 0 or h <= 0 or len(msg.data) != w * h:
+            self.get_logger().warn(f'/map ignorado: {len(msg.data)} celdas para {w}x{h}',
+                                   throttle_duration_sec=5.0)
+            return
+        values = np.asarray(msg.data, dtype=np.int8).reshape(h, w)
         snap = GridSnapshot(values=values, resolution=float(msg.info.resolution),
                             origin_n=float(msg.info.origin.position.y),
                             origin_e=float(msg.info.origin.position.x), stamp=self._now())

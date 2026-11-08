@@ -94,8 +94,8 @@ DEFAULTS = {
     'avoid.lookahead': 4.0,             # m mínimos; crece con la distancia de frenado
     'avoid.stop_distance': 1.3,         # m desde el centro: frenado del todo
     'plan.narrow_inflation_radius': 0.55,   # m: 2º intento del A* (0 = no); radio + 10 cm
-    'plan.narrow_speed': 0.5,
-    'plan.narrow_hold': 4.0,                # s que se mantiene el modo angosto tras el último aviso               # m/s máximos por un paso angosto
+    'plan.narrow_speed': 0.5,               # m/s máximos por un paso angosto
+    'plan.narrow_hold': 4.0,                # s que se mantiene el modo angosto tras el último aviso
     'avoid.narrow_safety_margin': 0.1,      # m de margen del VFH en un paso angosto
     'avoid.narrow_emergency_distance': 0.5, # m de huida en un paso angosto (> radio)
     'avoid.emergency_distance': 0.7,    # < radio + margen: si no, bordear dispara la huida
@@ -142,6 +142,110 @@ DEFAULTS = {
 }
 
 
+ENUM_PARAMS = {
+    'nav.yaw_mode': ('travel', 'goal', 'fixed'),
+    'map_mission.strategy': ('frontier', 'lawnmower'),
+    'avoid.on_failure': ('return', 'hold', 'skip'),
+    'avoid.on_return_failure': ('land', 'hold'),
+}
+
+
+def validate_params(p):
+    """Revisa la configuración ANTES de volar. Devuelve `(errores, avisos)`:
+    con errores la misión no despega (mejor enterarse en tierra que en el
+    aire). Las reglas son las invariantes de CLAUDE.md, "Trampas conocidas"."""
+    errors, warnings = [], []
+
+    def num(name):
+        try:
+            v = float(p(name))
+        except (TypeError, ValueError, KeyError):
+            errors.append(f'{name}: falta o no es un número')
+            return math.nan
+        if not math.isfinite(v):
+            errors.append(f'{name} = {v}: tiene que ser finito')
+        return v
+
+    for name in ('control_rate', 'cruise_speed', 'climb_speed', 'acceptance_radius',
+                 'takeoff_altitude', 'plan.resolution', 'avoid.robot_radius',
+                 'avoid.max_decel', 'avoid.sensor_timeout', 'avoid.escape_speed',
+                 'map_mission.altitude', 'scan.yaw_rate', 'nav.max_yaw_rate',
+                 'nav.pose_timeout', 'plan.narrow_speed'):
+        if not num(name) > 0.0:
+            errors.append(f'{name} = {p(name)}: tiene que ser > 0')
+    for name in ('avoid.safety_margin', 'avoid.latency', 'avoid.trigger_hold',
+                 'avoid.emergency_hold', 'nav.pose_loss_land_after',
+                 'avoid.sensor_loss_land_after', 'nav.max_tracking_error'):
+        if not num(name) >= 0.0:
+            errors.append(f'{name} = {p(name)}: no puede ser negativo')
+
+    rate = num('control_rate')
+    if 0.0 < rate < 10.0:
+        errors.append(f'control_rate = {rate} Hz: PX4 pide el flujo de OFFBOARD a > 2 Hz y '
+                      'la evasión necesita >= 10 Hz')
+    radius, margin = num('avoid.robot_radius'), num('avoid.safety_margin')
+    emergency = num('avoid.emergency_distance')
+    if not emergency < radius + margin:
+        errors.append(f'avoid.emergency_distance = {emergency} >= robot_radius + safety_margin '
+                      f'= {radius + margin}: bordear una pared dispararía la huida')
+    if not emergency > radius:
+        warnings.append(f'avoid.emergency_distance = {emergency} <= robot_radius = {radius}: la '
+                        'huida empezaría ya tocando')
+    if not num('avoid.stop_distance') > emergency:
+        errors.append('avoid.stop_distance tiene que ser mayor que avoid.emergency_distance')
+    n_margin, n_emerg = num('avoid.narrow_safety_margin'), num('avoid.narrow_emergency_distance')
+    if not (n_margin >= 0.0 and 0.0 < n_emerg < radius + n_margin):
+        warnings.append('avoid.narrow_*: la emergencia en paso angosto debería quedar entre 0 y '
+                        'robot_radius + narrow_safety_margin')
+    if num('plan.inflation_radius') < radius:
+        warnings.append(f'plan.inflation_radius < avoid.robot_radius ({radius}): el A* traza '
+                        'caminos por donde el dron no entra')
+
+    lo, hi = num('safety.min_altitude'), num('safety.max_altitude')
+    if not lo < hi:
+        errors.append(f'safety.min_altitude ({lo}) tiene que ser menor que max_altitude ({hi})')
+    for name in ('takeoff_altitude', 'map_mission.altitude'):
+        v = num(name)
+        if math.isfinite(v) and not lo <= v <= hi:
+            warnings.append(f'{name} = {v} m queda fuera de [{lo}, {hi}]: se recorta '
+                            '(safety.*_altitude)')
+    try:
+        flat = [float(v) for v in (p('waypoints') or [])]
+    except (TypeError, ValueError):
+        flat = None
+        errors.append('waypoints: tienen que ser números')
+    if flat is not None:
+        if len(flat) % 3:
+            errors.append(f'waypoints tiene {len(flat)} valores: múltiplo de 3 (n, e, altura)')
+        elif not all(math.isfinite(v) for v in flat):
+            errors.append('waypoints con valores no finitos')
+        else:
+            for i in range(0, len(flat), 3):
+                if not lo <= flat[i + 2] <= hi:
+                    warnings.append(f'waypoint {i // 3}: altura {flat[i + 2]} m fuera de '
+                                    f'[{lo}, {hi}]: se recorta')
+    try:
+        area = [float(v) for v in p('map_mission.area')]
+        if len(area) != 4 or not all(math.isfinite(v) for v in area):
+            errors.append('map_mission.area: [n0, e0, n1, e1] finitos')
+        elif not (area[0] < area[2] and area[1] < area[3]):
+            errors.append(f'map_mission.area = {area}: hace falta n0 < n1 y e0 < e1')
+    except (TypeError, ValueError):
+        errors.append('map_mission.area: [n0, e0, n1, e1] numéricos')
+    fence = list(p('safety.geofence') or [])
+    if fence and (len(fence) != 4 or not (float(fence[0]) < float(fence[2])
+                                          and float(fence[1]) < float(fence[3]))):
+        errors.append(f'safety.geofence = {fence}: [] o [n0, e0, n1, e1] con n0 < n1, e0 < e1')
+    for name, allowed in ENUM_PARAMS.items():
+        if p(name) not in allowed:
+            errors.append(f'{name} = {p(name)!r}: tiene que ser uno de {list(allowed)}')
+    if not p('avoid.enabled'):
+        warnings.append('avoid.enabled = false: el dron vuela SIN evasión')
+    elif not p('avoid.require_sensors'):
+        warnings.append('avoid.require_sensors = false: puede despegar sin datos de obstáculos')
+    return errors, warnings
+
+
 def distance_2d(a, b):
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
@@ -176,6 +280,7 @@ class MissionCore:
         self._fov_scale = 1.0
         self.snapshot = None
         self.walls_summary = (0, 0, 0)
+        self._input_rejects = {}      # entradas descartadas por inválidas, por tipo
 
         # --- salidas ---
         self.setpoint = None          # (n, e, d, yaw)
@@ -253,6 +358,11 @@ class MissionCore:
         self.frontiers_open = 0
         self._last_frontier_check = -math.inf
 
+        self.config_errors, warnings = validate_params(self.p)
+        for message in self.config_errors:
+            self.log('error', f'configuración inválida: {message}')
+        for message in warnings:
+            self.log('warn', f'configuración: {message}')
         self.avoider = VfhAvoider(self._avoid_config())
 
     # ------------------------------------------------------------------
@@ -305,17 +415,25 @@ class MissionCore:
     def update_vehicle(self, position, velocity, heading, valid=True, stamp=None):
         """Posición de PX4. `stamp`: cuándo llegó (para el timeout de pose); sin
         stamp se la toma como recién llegada."""
+        position = tuple(float(v) for v in position[:3])
+        # PX4 manda NaN en x/y/z cuando el estimador no tiene esa componente
+        # (aunque a veces con xy_valid todavía en true un ciclo): es pérdida de
+        # posición, no una posición.
+        if not all(math.isfinite(v) for v in position):
+            valid = False
         self.position_valid = bool(valid)
         if not valid:
             return
         self._pose_time = None if stamp is None else float(stamp)
-        position = (float(position[0]), float(position[1]), float(position[2]))
         if self.armed and self._last_position is not None:
             self._distance_traveled += math.dist(position, self._last_position)
         self._last_position = position
         self.position = position
-        self.velocity = tuple(float(v) for v in velocity)
-        self.heading = float(heading)
+        # Velocidad o rumbo no finitos: 0 (no hay feedforward) / el último bueno.
+        self.velocity = tuple(float(v) if math.isfinite(float(v)) else 0.0
+                              for v in tuple(velocity)[:3])
+        if math.isfinite(float(heading)):
+            self.heading = float(heading)
 
     def update_status(self, armed, offboard):
         was_offboard = self.offboard
@@ -333,12 +451,30 @@ class MissionCore:
         `live`: los mismos sectores sólo con sensores en vivo (sin la memoria
         del mapa); la emergencia se decide con ellos. `seen_age`: por sector,
         s entre la última vez que un sensor lo miró y `stamp` (inf = nunca)."""
-        self._sectors = np.asarray(ranges, dtype=float)
-        self._sectors_live = (np.asarray(live, dtype=float)
-                              if live is not None and len(live) == len(self._sectors) else None)
-        self._sectors_seen_age = (np.asarray(seen_age, dtype=float)
-                                  if seen_age is not None and len(seen_age) == len(self._sectors)
-                                  else None)
+        ranges = np.asarray(ranges, dtype=float).reshape(-1)
+        if ranges.size < 8 or not math.isfinite(float(stamp)):
+            # Mensaje inservible (sin sectores, o sin instante de captura): se
+            # ignora y el dato anterior envejece solo hasta el failsafe.
+            self._warn_input('sectores', f'sectores ignorados ({ranges.size} sectores, '
+                                         f'stamp {stamp})')
+            return
+        # NaN = "no sé": se trata como sector no visto (no como libre, que es
+        # lo que haría un NaN en cualquier comparación).
+        bad = np.isnan(ranges)
+        ranges = np.where(bad, math.inf, ranges)
+        self._sectors = ranges
+        self._sectors_live = None
+        if live is not None and len(live) == len(ranges):
+            live = np.asarray(live, dtype=float)
+            self._sectors_live = np.where(np.isnan(live), math.inf, live)
+        self._sectors_seen_age = None
+        if seen_age is not None and len(seen_age) == len(ranges):
+            age = np.asarray(seen_age, dtype=float)
+            self._sectors_seen_age = np.where(np.isnan(age), math.inf, age)
+        if np.any(bad):
+            if self._sectors_seen_age is None:
+                self._sectors_seen_age = np.zeros(len(ranges))
+            self._sectors_seen_age[bad] = math.inf
         self._sectors_stamp = float(stamp)
         self._sectors_ever = True
         self._sectors_range = float(range_max) if range_max and range_max > 0 else math.inf
@@ -347,10 +483,24 @@ class MissionCore:
             self._narrow = False
 
     def update_map(self, snapshot):
+        res = getattr(snapshot, 'resolution', None)
+        values = getattr(snapshot, 'values', None)
+        if (snapshot is None or values is None or getattr(values, 'ndim', 0) != 2
+                or not res or not math.isfinite(float(res)) or float(res) <= 0.0):
+            self._warn_input('mapa', 'mapa ignorado: sin valores 2D o resolución inválida')
+            return
         self.snapshot = snapshot
 
     def update_walls_summary(self, flat, irregular, obstacles):
         self.walls_summary = (int(flat), int(irregular), int(obstacles))
+
+    def _warn_input(self, key, message):
+        """Avisa de una entrada descartada la 1.ª vez y después cada 100, para
+        no llenar el log a la frecuencia del tópico."""
+        n = self._input_rejects.get(key, 0) + 1
+        self._input_rejects[key] = n
+        if n == 1 or n % 100 == 0:
+            self.log('warn', f'{message} [{n} en total]')
 
     def pop_commands(self):
         out, self._commands = self._commands, []
@@ -388,6 +538,11 @@ class MissionCore:
     # Servicios
     # ------------------------------------------------------------------
     def _can_start(self, now):
+        if self.config_errors:
+            return False, ('configuración inválida, no se despega: '
+                           + '; '.join(self.config_errors[:3])
+                           + (f' (+{len(self.config_errors) - 3} más)'
+                              if len(self.config_errors) > 3 else ''))
         if self.state in FLYING_STATES and self.state != State.HOLD:
             return False, f'la misión ya está corriendo ({self.state.name})'
         if not self.position_valid or self.position is None:
@@ -561,11 +716,38 @@ class MissionCore:
                 return
             self.stream_offboard = True
             self._step_flight(now)
-            self.setpoint = (self._carrot[0], self._carrot[1], self._carrot[2], wrap_pi(self._yaw_sp))
+            self._publishable_setpoint()
         elif self.state in (State.LAND, State.ABORTED):
             self._step_landing()
         else:
             self.stream_offboard = False
+
+    def _publishable_setpoint(self):
+        """Última barrera antes de PX4: un setpoint con NaN/inf no sale nunca.
+        Si la cuenta dio algo no finito (bug o entrada que se coló), se
+        sostiene el último setpoint bueno y se pasa a HOLD."""
+        sp = (self._carrot[0], self._carrot[1], self._carrot[2], wrap_pi(self._yaw_sp))
+        if all(math.isfinite(float(v)) for v in sp):
+            self.setpoint = sp
+            if self.velocity_setpoint is not None and not all(
+                    math.isfinite(float(v)) for v in self.velocity_setpoint):
+                self.velocity_setpoint = None
+            return
+        self.velocity_setpoint = None
+        good = self.setpoint if self.setpoint is not None and all(
+            math.isfinite(float(v)) for v in self.setpoint) else None
+        if good is None and self.position is not None:
+            good = (self.position[0], self.position[1], self.position[2],
+                    wrap_pi(self.heading))
+        self.setpoint = good
+        if good is not None:
+            self._carrot = list(good[:3])
+            self._yaw_sp = good[3]
+        else:
+            self.stream_offboard = False
+        if self.state != State.HOLD:
+            self.log('error', f'setpoint no finito {sp}: se sostiene el último bueno (HOLD)')
+            self._enter(State.HOLD, 'error interno: setpoint no finito')
 
     def _step_landing(self):
         # PX4 puede tardar unos ciclos en aceptar AUTO_LAND; mientras siga en

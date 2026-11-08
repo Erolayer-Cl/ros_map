@@ -33,7 +33,7 @@ MID360_MAPPER = dict(min_range=0.4)
 INERCIA = dict(max_accel=1.5)
 RAPIDO = {'cruise_speed': 3.0}
 MARGENES_REDUCIDOS = {'plan.inflation_radius': 0.55, 'avoid.safety_margin': 0.1,
-                      'avoid.emergency_distance': 0.6, 'avoid.stop_distance': 0.9}
+                      'avoid.emergency_distance': 0.5, 'avoid.stop_distance': 0.9}
 # "Día real": Mid-360 de producción, ruido 3 cm, 20 % perdidos, polvo leve,
 # 0.1 s de latencia y ráfagas de 2 m/s con compensación.
 DIA_REAL = dict(lidar=dict(MID360, noise_std=0.03), mapper=dict(MID360_MAPPER),

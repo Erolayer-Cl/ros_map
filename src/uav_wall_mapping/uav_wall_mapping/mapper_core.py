@@ -20,6 +20,15 @@ from uav_wall_mapping.sectors import INF, compute_sectors, free_ray_ends, merge_
 from uav_wall_mapping.walls import WallExtractor, WallTracker, annotate_3d
 
 
+def _finite(values, n):
+    """True si `values` tiene al menos n componentes y las primeras n son finitas."""
+    try:
+        arr = np.asarray(values, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        return False
+    return arr.size >= n and bool(np.all(np.isfinite(arr[:n])))
+
+
 @dataclass
 class MapperConfig:
     # --- grilla 2D ---
@@ -83,6 +92,40 @@ class MapperConfig:
     traversed_radius: float = 0.8     # m alrededor del camino recorrido que se dan por
     #                                   conocidos si nadie los vio (0 = no)
 
+    def problems(self):
+        """Lista de errores de configuración (vacía = bien). `WallMapper` no
+        arranca con errores: mejor caerse en tierra que mapear basura."""
+        out = []
+
+        def positive(*names):
+            for name in names:
+                v = getattr(self, name)
+                if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
+                    out.append(f'{name} = {v}: tiene que ser > 0')
+        positive('resolution', 'initial_size', 'max_size', 'max_range', 'voxel_resolution',
+                 'sector_range', 'sector_timeout', 'outlier_voxel', 'trajectory_step')
+        if not 0.0 < self.sensor_fov_deg <= 360.0:
+            out.append(f'sensor_fov_deg = {self.sensor_fov_deg}: entre 0 y 360')
+        if not 0.0 <= self.min_range < self.max_range:
+            out.append(f'min_range ({self.min_range}) tiene que ser >= 0 y < max_range '
+                       f'({self.max_range})')
+        if not self.min_height < self.max_height:
+            out.append(f'min_height ({self.min_height}) >= max_height ({self.max_height})')
+        if int(self.sector_bins) < 8 or int(self.free_ray_bins) < 8:
+            out.append('sector_bins y free_ray_bins tienen que ser >= 8')
+        if self.sector_band_below < 0 or self.sector_band_above < 0:
+            out.append('sector_band_below/above no pueden ser negativos')
+        if not self.hit_logodds > 0 > self.miss_logodds:
+            out.append('hit_logodds tiene que ser > 0 y miss_logodds < 0')
+        if self.no_hit_free_range < 0 or self.traversed_radius < 0:
+            out.append('no_hit_free_range y traversed_radius no pueden ser negativos')
+        if self.self_filter_box is not None:
+            b = tuple(self.self_filter_box)
+            if len(b) != 6 or not (b[0] < b[1] and b[2] < b[3] and b[4] < b[5]):
+                out.append(f'self_filter_box = {b}: [xmin, xmax, ymin, ymax, zmin, zmax] '
+                           'con min < max')
+        return out
+
 
 @dataclass
 class SectorInfo:
@@ -140,6 +183,9 @@ class WallMapper:
     def __init__(self, config=None):
         self.cfg = config or MapperConfig()
         c = self.cfg
+        problems = c.problems()
+        if problems:
+            raise ValueError('configuración del mapper inválida: ' + '; '.join(problems))
         self.grid = OccupancyGrid2D(resolution=c.resolution, initial_size=c.initial_size,
                                     max_size=c.max_size, hit_logodds=c.hit_logodds,
                                     miss_logodds=c.miss_logodds,
@@ -167,6 +213,7 @@ class WallMapper:
         self.forgotten = 0             # celdas olvidadas por efímeras (acumulado)
         self._last_forget = -math.inf
         self.outliers = 0              # puntos aislados descartados (acumulado)
+        self.rejected_clouds = 0       # nubes con pose/stamp no finitos, descartadas enteras
         self._isolated_history = []    # [(stamp, claves de vóxel en el mundo)] de puntos aislados
         self.last_extract_sec = 0.0
 
@@ -189,6 +236,8 @@ class WallMapper:
         self._seen[:] = -math.inf
 
     def update_trajectory(self, position_ned):
+        if not _finite(position_ned, 3):
+            return
         if self.home_down is None:
             self.set_home(position_ned[2])
         p = (float(position_ned[0]), float(position_ned[1]), float(position_ned[2]))
@@ -216,7 +265,14 @@ class WallMapper:
         instante de captura), no la última recibida: ver `pose_buffer.py`.
         """
         c = self.cfg
+        if not (_finite(position_ned, 3) and _finite(q, 4) and _finite([stamp], 1)
+                and float(np.linalg.norm(np.asarray(q, dtype=float)[:4])) > 0.5):
+            # Con una pose o un instante basura cada punto caería en cualquier
+            # lado del mapa: mejor perder la nube.
+            self.rejected_clouds += 1
+            return 0
         pts = np.asarray(points_sensor, dtype=float).reshape(-1, 3)
+        pts = pts[np.all(np.isfinite(pts), axis=1)]
         if filter_outliers and c.outlier_min_points > 1 and pts.shape[0]:
             noisy = isolated_mask(pts, voxel=c.outlier_voxel, min_points=c.outlier_min_points,
                                   max_range=c.outlier_max_range)
@@ -281,9 +337,14 @@ class WallMapper:
         usaron.
         """
         c = self.cfg
+        if not (_finite(drone_position, 3) and _finite(sensor_origin, 3)
+                and _finite([stamp], 1)):
+            self.rejected_clouds += 1
+            return 0
         if self.home_down is None:
             self.set_home(drone_position[2])
         pts = np.asarray(points_world, dtype=float).reshape(-1, 3)
+        pts = pts[np.all(np.isfinite(pts), axis=1)]
         origin = np.asarray(sensor_origin, dtype=float).reshape(3)
         if pts.shape[0]:
             rng = np.linalg.norm(pts - origin, axis=1)
@@ -414,6 +475,11 @@ class WallMapper:
         con eso.
         """
         c = self.cfg
+        if not _finite(drone_position, 3):
+            # Sin pose no hay "alrededor del dron": no fresco (no se publica).
+            empty = np.full(c.sector_bins, INF)
+            return SectorInfo(ranges=empty, live=empty.copy(), stamp=-math.inf,
+                              fresh=False, seen_age=np.full(c.sector_bins, INF))
         live, newest = self.live_sectors(now, drone_position)
         ranges = live
         if c.sectors_from_map:

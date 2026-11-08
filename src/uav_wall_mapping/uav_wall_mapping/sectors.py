@@ -172,6 +172,8 @@ def to_px4_obstacle_distance(ranges, max_distance_m, min_distance_m=0.2, unknown
     out = np.full(ranges.shape, max_cm + 1, dtype=np.int64)
     finite = np.isfinite(ranges)
     out[finite] = np.clip(np.rint(ranges[finite] * 100.0), int(min_distance_m * 100.0), max_cm)
+    # NaN es "no sé", nunca "libre" (inf sí es libre: sector visto sin eco).
+    out[np.isnan(ranges)] = 65535
     if unknown_mask is not None:
         out[np.asarray(unknown_mask, dtype=bool)] = 65535
     return out.astype(np.uint16).tolist()

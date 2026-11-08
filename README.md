@@ -46,6 +46,7 @@ ZED X Mini) con menos alcance y campo visual. Hay un YAML listo para cada caso.
 | [docs/arquitectura.md](docs/arquitectura.md) | Nodos, tópicos, marcos, algoritmos (mapa, paredes, VFH+, A*, fronteras). |
 | [docs/jetson-px4-1.17.md](docs/jetson-px4-1.17.md) | Dron real: Jetson, uXRCE-DDS por TELEM2, parámetros de PX4 v1.17, Mid-360, primer vuelo. |
 | [docs/evasion-entornos-reales.md](docs/evasion-entornos-reales.md) | Qué hacen PX4, ArduPilot y los planificadores que vuelan de verdad; qué adoptamos (frenado físico, tiempos, filtros, failsafes) y qué no cubrimos. |
+| [docs/hardening.md](docs/hardening.md) | Entradas basura y configuración inválida: qué tiraba los nodos, qué se arregló, cómo probarlo (`./run_tests.sh robustez`). |
 | [docs/investigacion/](docs/investigacion/) | Reportes completos: código de planificadores reales, autopilotos y entorno real, brechas de este stack. |
 
 ---
