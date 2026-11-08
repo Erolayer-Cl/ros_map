@@ -25,9 +25,14 @@ Obsidian), `UAVinformaticaignacio/Jetson_pruebas` y la organización
 - **No hay lidar.** Ningún repo lo nombra como componente: la wiki sólo dice
   "sensores (GPS, cámara, lidar)" de forma genérica, y la rama de la org esquiva
   con 5 sensores `Distance` (rangefinders 1D) de AirSim + cámara frontal para YOLO.
-- Computadora: **Jetson Nano** (L4T r32.7.1 = JetPack 4.6, Ubuntu 18.04),
-  ROS 2 Humble en el contenedor `dustynv/ros:humble-ros-base-l4t-r32.7.1`,
-  swap 4 GB. Controladora: Pixhawk con PX4, por serie a la Jetson.
+- Computadora de compañía: **Ubuntu 22.04 + ROS 2 Humble nativo** (dicho por el
+  usuario). Modelo sin confirmar: `Jetson_pruebas` es de una Jetson Nano
+  (JetPack 4.6 = Ubuntu 18.04, Humble en Docker `dustynv`), pero una Nano no
+  corre 22.04 oficialmente; con 22.04 lo esperable es una Orin (JetPack 6).
+- Controladora: **Pixhawk 6C con PX4 v1.17** (dicho por el usuario).
+  uXRCE-DDS por **TELEM2** (`UXRCE_DDS_CFG` 102, `SER_TEL2_BAUD` 921600) a un
+  UART de la Jetson o adaptador USB-serie. La 6C **no tiene Ethernet** (eso es
+  la 6X): sólo serie. `px4_msgs` en `release/1.17` ya coincide.
 
 Consecuencias para este stack:
 - El mapeo y la evasión necesitan **puntos 3D**. Una cámara RGB sola no sirve:
@@ -41,10 +46,10 @@ Consecuencias para este stack:
   sirve para flujo óptico (posición sin GPS en interiores, con un telémetro
   hacia abajo) y aterrizaje de precisión/ArUco. En interiores sin GPS **la
   posición es requisito** (docs/sensores.md §4).
-- Jetson Nano: 4 núcleos A57, sin margen para FAST-LIO2/VINS pesado. Bajar
-  `cloud.max_rate` (5 Hz) y subir `cloud.downsample` (0.1) si el mapper no
-  llega. Verificar `python3 --version` ≥ 3.8 en el contenedor (se usan
-  `dataclasses` y `math.dist`). La Orin Nano es la opción recomendada.
+- Si al final fuera una Jetson Nano: 4 núcleos A57, bajar `cloud.max_rate`
+  (5 Hz) y subir `cloud.downsample` (0.1); en Docker verificar Python ≥ 3.8
+  (`dataclasses`, `math.dist`). Con Ubuntu 22.04 nativo (Python 3.10) no hay
+  problema de versión.
 
 ## Probar
 

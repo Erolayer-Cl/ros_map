@@ -122,7 +122,8 @@ Docker.
 ### Configuración del dron del laboratorio (sin lidar)
 
 El dron previsto lleva **una cámara al frente y una hacia abajo**, sin lidar,
-con una Jetson Nano (JetPack 4.6, Humble en Docker `dustynv`). Qué hace falta
+con Ubuntu 22.04 + ROS 2 Humble en la computadora de compañía y una Pixhawk 6C
+con PX4 v1.17. Qué hace falta
 para que este stack funcione así:
 
 | Pieza | Rol | Qué tiene que ser |
@@ -132,8 +133,8 @@ para que este stack funcione así:
 | Opcional | Costados y atrás | 2-4 rangefinders 1D: la cámara frontal ve ~87° y nada detrás. |
 
 Límites con cámara frontal: volar ≤ 1 m/s, el mapeo tarda más (tiene que girar
-para ver los costados) y la Jetson Nano va justa: `cloud.max_rate: 5.0`,
-`cloud.downsample: 0.1`. Con una Orin Nano esos límites desaparecen.
+para ver los costados). Si la computadora fuera una Jetson Nano, ir con
+`cloud.max_rate: 5.0` y `cloud.downsample: 0.1`; una Orin no lo necesita.
 
 ---
 

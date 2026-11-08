@@ -69,7 +69,9 @@ está en los YAML (`px4.*_topic`); si se cambia de firmware, verificar con
 Cableado: TELEM2 del Pixhawk (TX, RX, GND; **no** conectar 5 V entre placas)
 al UART del header de 40 pines de la Jetson (`/dev/ttyTHS0` o `/dev/ttyTHS1`
 según el carrier: `ls /dev/ttyTHS*`), o con un adaptador USB-serie
-(`/dev/ttyUSB0`). En Pixhawk 6X/6C con Ethernet se puede usar UDP.
+(`/dev/ttyUSB0`). En la Pixhawk 6X se puede usar UDP por Ethernet; la
+**Pixhawk 6C no tiene Ethernet**: con ella sólo TELEM2 por serie (conector
+JST-GH de 6 pines: 5V, TX, RX, CTS, RTS, GND; usar TX/RX/GND cruzados).
 
 Parámetros de PX4 v1.17 (QGroundControl → Parameters), y reiniciar:
 
