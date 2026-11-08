@@ -133,8 +133,8 @@ para que este stack funcione así:
 | Opcional | Costados y atrás | 2-4 rangefinders 1D: la cámara frontal ve ~87° y nada detrás. |
 
 Límites con cámara frontal: volar ≤ 1 m/s, el mapeo tarda más (tiene que girar
-para ver los costados). Si la computadora fuera una Jetson Nano, ir con
-`cloud.max_rate: 5.0` y `cloud.downsample: 0.1`; una Orin no lo necesita.
+para ver los costados). La computadora es una **Jetson Orin NX** (JetPack 6):
+alcanza para la cámara de profundidad a 10-15 Hz más YOLO con TensorRT.
 
 ---
 

@@ -25,10 +25,9 @@ Obsidian), `UAVinformaticaignacio/Jetson_pruebas` y la organización
 - **No hay lidar.** Ningún repo lo nombra como componente: la wiki sólo dice
   "sensores (GPS, cámara, lidar)" de forma genérica, y la rama de la org esquiva
   con 5 sensores `Distance` (rangefinders 1D) de AirSim + cámara frontal para YOLO.
-- Computadora de compañía: **Ubuntu 22.04 + ROS 2 Humble nativo** (dicho por el
-  usuario). Modelo sin confirmar: `Jetson_pruebas` es de una Jetson Nano
-  (JetPack 4.6 = Ubuntu 18.04, Humble en Docker `dustynv`), pero una Nano no
-  corre 22.04 oficialmente; con 22.04 lo esperable es una Orin (JetPack 6).
+- Computadora de compañía: **Jetson Orin NX** con **JetPack 6 (Ubuntu 22.04) +
+  ROS 2 Humble nativo** por apt (Python 3.10). El repo `Jetson_pruebas` es de
+  una Jetson Nano anterior (JetPack 4.6, Docker `dustynv`): no aplica.
 - Controladora: **Pixhawk 6C con PX4 v1.17** (dicho por el usuario).
   uXRCE-DDS por **TELEM2** (`UXRCE_DDS_CFG` 102, `SER_TEL2_BAUD` 921600) a un
   UART de la Jetson o adaptador USB-serie. La 6C **no tiene Ethernet** (eso es
@@ -46,10 +45,13 @@ Consecuencias para este stack:
   sirve para flujo óptico (posición sin GPS en interiores, con un telémetro
   hacia abajo) y aterrizaje de precisión/ArUco. En interiores sin GPS **la
   posición es requisito** (docs/sensores.md §4).
-- Si al final fuera una Jetson Nano: 4 núcleos A57, bajar `cloud.max_rate`
-  (5 Hz) y subir `cloud.downsample` (0.1); en Docker verificar Python ≥ 3.8
-  (`dataclasses`, `math.dist`). Con Ubuntu 22.04 nativo (Python 3.10) no hay
-  problema de versión.
+- Orin NX: sobra para este stack (Python + numpy) con la cámara de profundidad
+  a 10-15 Hz, y deja margen para YOLO (TensorRT) sobre la cámara frontal o
+  VIO/flujo óptico con la de abajo. Modo de energía máximo (`sudo nvpmodel -m 0`,
+  `sudo jetson_clocks`) para que el mapper no tenga picos de latencia.
+- UART con la Pixhawk: el del header de 40 pines (`ls /dev/ttyTHS*`); quitar la
+  consola serie de ese puerto si la tiene (`systemctl disable nvgetty`) y
+  agregar el usuario al grupo `dialout`.
 
 ## Probar
 

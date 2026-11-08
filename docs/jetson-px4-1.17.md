@@ -1,6 +1,6 @@
 # Despliegue en el dron real: Jetson + ROS 2 Humble + PX4 v1.17
 
-Cómo pasar de la simulación al dron: Jetson Orin como computadora de a bordo
+Cómo pasar de la simulación al dron: Jetson Orin (NX en el dron del laboratorio) como computadora de a bordo
 (ROS 2 Humble), Pixhawk con PX4 v1.17 conectado por uXRCE-DDS (sin MAVROS),
 lidar Livox Mid-360. Al final, una lista de verificación para el primer vuelo.
 
