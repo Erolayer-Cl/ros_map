@@ -156,13 +156,11 @@ Pedido: buscar código de ejemplo de evasión que se use en vuelos reales, ver
 qué consideran, y mejorar este stack.
 
 Estado:
-- Base: commit `be2db04` en `claude/ros2-px4-wall-detection-mapping-taoqhe`.
-  El **push a GitHub falla con 403** (falta la GitHub App de Claude en
-  `Erolayer-Cl/ros_map`); arreglarlo en https://claude.ai/connect-github.
+- Rama `claude/ros2-px4-wall-detection-mapping-taoqhe`, publicada en
+  `Erolayer-Cl/ros_map` (la GitHub App ya está instalada; el push funciona).
 - Ola 1 (hecha): investigación, análisis de brechas y QA adversarial. Los
   reportes están en `docs/investigacion/` (01 planificadores, 02 autopilotos y
-  entorno real, 03 brechas); el arnés de QA quedó en el scratchpad de la sesión
-  (`qa/harness/run_all.py --repo <ruta>`), no en el repo.
+  entorno real, 03 brechas); el arnés de QA está en `qa/` (ver `qa/README.md`).
 - Ola 2 (hecha e integrada en la rama): frenado físico, tiempos (historial de
   poses + edad del dato), franja relativa al dron, filtros de auto-impactos y
   ruido, sectores vistos/scaleToFOV, failsafes, mapper sin bloqueo, simulación
@@ -176,6 +174,8 @@ Estado:
   límite de repeticiones, `no_hit_free_range` 3 m en la config de cámara).
   Límites conocidos: puertas de 1.2 m (2a/2f), rastro de una caja que se fue
   lejos del camino (7b), cámara configurada como lidar (9d, lenta).
+- Hardening (hecho, docs/hardening.md): 111 unitarias, fuzzer 29/29, los 3
+  nodos con basura en vuelo terminan la misión; QA sin cambios (61/65).
 - Pendiente: probar con ROS 2 real / Unreal / vuelo.
   Lo no cubierto (vidrio, cables, deskew por punto → FAST-LIO2, evasión
   vertical, batería, predicción de dinámicos, mapeo con cámara: livelock entre
